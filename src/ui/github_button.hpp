@@ -27,7 +27,8 @@ public:
             "  background: transparent;"
             "}"
         );
-        setFixedHeight(26);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(sizeHint());
         setCursor(Qt::PointingHandCursor);
         setToolTip("Star on GitHub (Click to view repository)");
         setAttribute(Qt::WA_Hover, true);
@@ -64,6 +65,7 @@ public:
     void setMode(int mode) {
         if (m_mode == mode) return;
         m_mode = mode;
+        setFixedSize(sizeHint());
         updateGeometry();
         update();
     }
@@ -87,12 +89,18 @@ public:
     QSize sizeHint() const override {
         if (m_mode == 2) {
             return QSize(26, 26);
-        } else if (m_mode == 1) {
-            // Compact ("Star")
-            return QSize(88, 26);
         }
-        // Full ("Star on GitHub") - 160px ensures zero truncation
-        return QSize(160, 26);
+        QFont font("Segoe UI");
+        font.setPixelSize(12);
+        font.setWeight(QFont::Bold);
+        QFontMetrics fm(font);
+        QString labelText = (m_mode == 1) ? "Star" : "Star on GitHub";
+        int textW = fm.horizontalAdvance(labelText);
+
+        // Matching BadgeWidget geometry:
+        // leftPad (8) + ghIcon (14) + gap (6) + textW + gap (6) + starIcon (14) + rightPad (9)
+        int w = 8 + 14 + 6 + textW + 6 + 14 + 9;
+        return QSize(w, 26);
     }
 
     QSize minimumSizeHint() const override {
@@ -222,31 +230,37 @@ protected:
         }
 
         // ================= MODE 0 & 1: Pill (Full or Compact) =================
-        double leftPad = (m_mode == 1) ? 9.0 : 12.0;
-        QPixmap ghPix = Icons::getFilledPixmap(Icons::GitHub, textColor, 15, dpr, 24.0, 24.0);
-        qreal ghW = ghPix.width() / ghPix.devicePixelRatio();
-        qreal ghH = ghPix.height() / ghPix.devicePixelRatio();
-        QRectF ghRect(leftPad, (h - ghH) / 2.0, ghW, ghH);
-        p.drawPixmap(ghRect.toRect(), ghPix);
+        const qreal ghSize = 14.0;
+        const qreal starSize = 14.0;
+        const qreal leftPad = 8.0;
+        const qreal gap = 6.0;
 
-        // 2. Draw Text ("Star on GitHub" or "Star")
+        // 1. Draw GitHub Icon optically centered on Y (h = 26 -> Y = (26 - 14)/2 = 6.0)
+        const qreal ghX = leftPad;
+        const qreal ghY = (h - ghSize) / 2.0;
+
+        QPixmap ghPix = Icons::getFilledPixmap(Icons::GitHub, textColor, 14, dpr, 24.0, 24.0);
+        QRectF ghRect(ghX, ghY, ghSize, ghSize);
+        p.drawPixmap(ghRect, ghPix, QRectF(0, 0, ghPix.width(), ghPix.height()));
+
+        // 2. Draw Text ("Star on GitHub" or "Star") with consistent 6px gap to icon
         QString labelText = (m_mode == 1) ? "Star" : "Star on GitHub";
-        QFont font("Segoe UI", 9, QFont::Bold);
+        QFont font("Segoe UI");
         font.setPixelSize(12);
+        font.setWeight(QFont::Bold);
         p.setFont(font);
         p.setPen(textColor);
 
-        double textX = leftPad + ghW + ((m_mode == 1) ? 6.0 : 8.0);
-        double starPad = (m_mode == 1) ? 9.0 : 12.0;
-        double starSize = 14.0;
-        double textW = w - textX - starPad - starSize - ((m_mode == 1) ? 6.0 : 8.0);
+        QFontMetrics fm(font);
+        const qreal textW = fm.horizontalAdvance(labelText);
+        const qreal textX = ghX + ghSize + gap;
+        QRectF textRect(textX, 0.0, textW + 2.0, h);
+        p.drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, labelText);
 
-        QRectF textRect(textX, -1.5, textW, h);
-        p.drawText(textRect, Qt::AlignCenter, labelText);
-
-        // 3. Draw Star Icon (.star with 360deg rotation and active color transition)
-        double starCenterX = w - starPad - (starSize / 2.0);
-        double starCenterY = h / 2.0;
+        // 3. Draw Star Icon with consistent 6px gap to text
+        const qreal starX = textX + textW + gap;
+        const qreal starCenterX = starX + (starSize / 2.0);
+        const qreal starCenterY = h / 2.0;
 
         // Star color: active gold if starred OR during spin
         double starColorT = (m_starred) ? 1.0 : std::clamp(m_spinProgress, 0.0, 1.0);
@@ -263,7 +277,7 @@ protected:
         p.translate(-starCenterX, -starCenterY);
 
         QRectF starRect(starCenterX - (stW / 2.0), starCenterY - (stH / 2.0), stW, stH);
-        p.drawPixmap(starRect.toRect(), starPix);
+        p.drawPixmap(starRect, starPix, QRectF(0, 0, starPix.width(), starPix.height()));
         p.restore();
 
         p.restore();

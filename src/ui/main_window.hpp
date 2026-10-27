@@ -23,6 +23,7 @@
 
 #include "../core/command_builder.hpp"
 #include "../core/scanner_process.hpp"
+#include "pps_button.hpp"
 #include "badge_widget.hpp"
 #include "theme_toggle.hpp"
 #include "hamburger_button.hpp"
@@ -56,6 +57,7 @@ public:
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void updateCommandAndValidation();
@@ -241,6 +243,8 @@ private:
     QCheckBox* m_ndjsonStatusCheck{nullptr};
     QCheckBox* m_jsonStatusCheck{nullptr};
     QComboBox* m_verboseCombo{nullptr};
+    QCheckBox* m_autoCheckpointCheck{nullptr};
+    QLineEdit* m_checkpointIntervalEdit{nullptr};
 
     // Sidebar - Mode Section
     QComboBox* m_modeCombo{nullptr};
@@ -264,14 +268,12 @@ private:
     QCheckBox* m_badsumCheck{nullptr};
 
     // Action Bar buttons
-    QPushButton* m_btnStart{nullptr};
-    QPushButton* m_btnStop{nullptr};
-    QPushButton* m_btnResume{nullptr};
-    QPushButton* m_btnOpenFolder{nullptr};
-    QPushButton* m_btnStartNarrow{nullptr};
-    QPushButton* m_btnStopNarrow{nullptr};
-    QPushButton* m_btnResumeNarrow{nullptr};
-    QPushButton* m_btnOpenFolderNarrow{nullptr};
+    PpsMainButton* m_btnStart{nullptr};
+    PpsIconButton* m_btnStop{nullptr};
+    PpsIconButton* m_btnOpenFolder{nullptr};
+    PpsMainButton* m_btnStartNarrow{nullptr};
+    PpsIconButton* m_btnStopNarrow{nullptr};
+    PpsIconButton* m_btnOpenFolderNarrow{nullptr};
 
     // Right Column - Command Preview
     TerminalCodeBox* m_terminalBox{nullptr};

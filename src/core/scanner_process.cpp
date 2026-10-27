@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QCoreApplication>
 #include <QDebug>
 #include <algorithm>
 
@@ -26,7 +27,8 @@ ScannerProcess::ScannerProcess(QObject* parent)
     : QObject(parent),
       m_process(new QProcess(this)),
       m_simTimer(new QTimer(this)),
-      m_tailTimer(new QTimer(this)) {
+      m_tailTimer(new QTimer(this)),
+      m_checkpointTimer(new QTimer(this)) {
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, &ScannerProcess::handleReadyReadStandardOutput);
     connect(m_process, &QProcess::readyReadStandardError, this, &ScannerProcess::handleReadyReadStandardError);
@@ -35,6 +37,7 @@ ScannerProcess::ScannerProcess(QObject* parent)
 
     connect(m_simTimer, &QTimer::timeout, this, &ScannerProcess::handleSimulationTick);
     connect(m_tailTimer, &QTimer::timeout, this, &ScannerProcess::pollOutputFile);
+    connect(m_checkpointTimer, &QTimer::timeout, this, &ScannerProcess::writeCheckpoint);
 }
 
 ScannerProcess::~ScannerProcess() {
@@ -43,7 +46,7 @@ ScannerProcess::~ScannerProcess() {
 
 bool ScannerProcess::canResume() const {
     if (m_state == State::Paused) return true;
-    return QFile::exists("paused.conf");
+    return QFile::exists("paused.conf") || QFile::exists(QCoreApplication::applicationDirPath() + "/paused.conf");
 }
 
 QString ScannerProcess::lookupServiceName(int port, const QString& proto) {
@@ -101,6 +104,9 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     m_userStopped = false;
     m_isSuspended = false;
     m_canResume = false;
+    m_baseEchoConf.clear();
+    m_totalProbes = 0;
+    m_currentResumeIndex = 0;
     m_pct = 0.0f;
     m_kpps = 0.0;
     m_found = 0;
@@ -109,6 +115,37 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     m_stderrBuf.clear();
     m_tailFilePath.clear();
     m_lastTailPos = 0;
+
+    if (!m_simulate && m_checkpointEnabled) {
+        QProcess echoProc;
+        QStringList echoArgs = args;
+        echoArgs.removeAll("-oD");
+        echoArgs.removeAll("-oJ");
+        echoArgs.removeAll("-oL");
+        echoArgs.removeAll("-oG");
+        echoArgs.removeAll("-oX");
+        echoArgs.removeAll("-oU");
+        echoArgs.removeAll("--output-flush");
+        echoArgs.append("--echo");
+        echoProc.start(program, echoArgs);
+        if (echoProc.waitForFinished(1000)) {
+            m_baseEchoConf = QString::fromUtf8(echoProc.readAllStandardOutput()).trimmed();
+        }
+        if (m_baseEchoConf.isEmpty()) {
+            QStringList lines;
+            for (int i = 0; i < args.size(); ++i) {
+                const QString& a = args.at(i);
+                if ((a == "-p" || a == "--rate") && i + 1 < args.size()) {
+                    lines << ((a == "-p" ? "ports = " : "rate = ") + args.at(++i));
+                } else if (a.startsWith("-p")) {
+                    lines << ("ports = " + a.mid(2));
+                } else if (!a.startsWith("-")) {
+                    lines << ("range = " + a);
+                }
+            }
+            m_baseEchoConf = lines.join("\n");
+        }
+    }
 
     // Detect if an output file was specified in the arguments (-oD, -oJ, -oL, -oX, -oG, -oB, --output-filename)
     for (int i = 0; i < args.size() - 1; ++i) {
@@ -157,6 +194,10 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
         m_tailTimer->start(200);
     }
 
+    if (m_checkpointEnabled && m_checkpointIntervalSec > 0) {
+        m_checkpointTimer->start(m_checkpointIntervalSec * 1000);
+    }
+
     return true;
 }
 
@@ -166,9 +207,16 @@ void ScannerProcess::pauseScan() {
     if (m_simTimer->isActive()) {
         m_simTimer->stop();
     }
+    if (m_checkpointTimer->isActive()) {
+        m_checkpointTimer->stop();
+    }
     if (m_tailTimer->isActive()) {
         pollOutputFile();
         m_tailTimer->stop();
+    }
+
+    if (m_checkpointEnabled) {
+        writeCheckpoint();
     }
 
 #ifdef _WIN32
@@ -196,9 +244,12 @@ void ScannerProcess::pauseScan() {
     emit logLineReceived(QString("[%1] Scan was paused by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
 }
 
-void ScannerProcess::stopScan() {
+void ScannerProcess::stopScan(bool clearCheckpoint) {
     if (m_simTimer->isActive()) {
         m_simTimer->stop();
+    }
+    if (m_checkpointTimer->isActive()) {
+        m_checkpointTimer->stop();
     }
 
     if (m_tailTimer->isActive()) {
@@ -234,9 +285,43 @@ void ScannerProcess::stopScan() {
         }
     }
 
+    if (clearCheckpoint) {
+        deleteCheckpoint();
+    }
+
     m_canResume = false;
     setState(State::Idle, "Scan stopped by user");
     emit logLineReceived(QString("[%1] Scan was stopped by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+}
+
+void ScannerProcess::writeCheckpoint() {
+    if (m_state != State::Scanning && m_state != State::Paused) return;
+    if (!m_checkpointEnabled || m_baseEchoConf.isEmpty()) return;
+
+    QString conf;
+    conf += "# resume information\n";
+    conf += QString("resume-index = %1\n").arg(m_currentResumeIndex);
+    if (m_totalProbes > 0) {
+        conf += QString("resume-count = %1\n").arg(m_totalProbes);
+    }
+    conf += "output-append = true\n\n";
+    conf += m_baseEchoConf + "\n";
+
+    QFile file("paused.conf");
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file.write(conf.toUtf8());
+        file.close();
+    }
+}
+
+void ScannerProcess::deleteCheckpoint() {
+    if (QFile::exists("paused.conf")) {
+        QFile::remove("paused.conf");
+    }
+    QString appPausedConf = QCoreApplication::applicationDirPath() + "/paused.conf";
+    if (QFile::exists(appPausedConf)) {
+        QFile::remove(appPausedConf);
+    }
 }
 
 void ScannerProcess::resumeScan(const QString& program) {
@@ -264,15 +349,19 @@ void ScannerProcess::resumeScan(const QString& program) {
         if (m_simulate && m_simTimer) {
             m_simTimer->start(100);
         }
+        if (m_checkpointEnabled && m_checkpointIntervalSec > 0) {
+            m_checkpointTimer->start(m_checkpointIntervalSec * 1000);
+        }
 
         setState(State::Scanning, "Scanning...");
         emit logLineReceived(QString("[%1] Scan resumed.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
         return;
     }
 
+    QString pausedConf = QFile::exists("paused.conf") ? "paused.conf" : (QCoreApplication::applicationDirPath() + "/paused.conf");
     QString prog = program.isEmpty() ? m_lastProgram : program;
     QStringList args;
-    args << "--resume" << "paused.conf";
+    args << "--resume" << pausedConf;
     startScan(prog, args, m_simulate);
 }
 
@@ -537,6 +626,16 @@ void ScannerProcess::parseOutputLine(const QString& line) {
         return;
     }
 
+    static const QRegularExpression scanHeaderRegex(
+        R"(Scanning\s+(\d+)\s+hosts\s+\[(\d+)\s+ports\/host\])",
+        QRegularExpression::CaseInsensitiveOption);
+    auto scanMatch = scanHeaderRegex.match(line);
+    if (scanMatch.hasMatch()) {
+        uint64_t hosts = scanMatch.captured(1).toULongLong();
+        uint64_t ports = scanMatch.captured(2).toULongLong();
+        m_totalProbes = hosts * ports;
+    }
+
     // 5. Detect masscan status: "rate:  0.00-kpps,  5.20% done, waiting 10-secs, 2-found" OR "found=2"
     static const QRegularExpression statRegex(
         R"(rate:\s*([\d\.]+)-kpps,\s*([\d\.]+)%\s*done,\s*([^,]+),\s*(?:found=)?(\d+)(?:-found)?)",
@@ -547,6 +646,11 @@ void ScannerProcess::parseOutputLine(const QString& line) {
         m_pct = statMatch.captured(2).toFloat();
         QString eta = statMatch.captured(3).trimmed();
         m_found = statMatch.captured(4).toInt();
+        if (m_totalProbes > 0) {
+            m_currentResumeIndex = static_cast<uint64_t>(m_totalProbes * (m_pct / 100.0f));
+        } else {
+            m_currentResumeIndex = static_cast<uint64_t>(m_pct * 10000.0f);
+        }
         emit progressUpdated(m_pct, m_kpps, eta, m_found);
         return;
     }
@@ -556,6 +660,9 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
     if (m_tailTimer && m_tailTimer->isActive()) {
         pollOutputFile();
         m_tailTimer->stop();
+    }
+    if (m_checkpointTimer && m_checkpointTimer->isActive()) {
+        m_checkpointTimer->stop();
     }
 
     if (!m_stdoutBuf.isEmpty()) {
@@ -570,6 +677,10 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
     }
 
     m_isSuspended = false;
+
+    if (exitCode == 0) {
+        deleteCheckpoint();
+    }
 
     if (m_userStopped) {
         m_userStopped = false;

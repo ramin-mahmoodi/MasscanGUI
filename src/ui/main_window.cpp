@@ -3,7 +3,6 @@
 #include "fluent_scroll_bar.hpp"
 #include "fluent_combo_box.hpp"
 #include "jelly_checkbox.hpp"
-#include "glitch_button.hpp"
 #include "icons.hpp"
 #include "theme.hpp"
 #include "terminal_box.hpp"
@@ -20,6 +19,8 @@
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QResizeEvent>
+#include <QCloseEvent>
+#include <QSettings>
 #include <QDesktopServices>
 #include <QUrl>
 #include <QDir>
@@ -114,6 +115,47 @@ MainWindow::MainWindow(QWidget* parent)
     populateCountryList();
     updateCommandAndValidation();
     updateThemeDependentAssets();
+
+    QSettings appSettings("MasscanCommunity", "MasscanGUI");
+    bool cpEnabled = appSettings.value("autoCheckpoint", true).toBool();
+    int cpInterval = appSettings.value("checkpointInterval", 5).toInt();
+    if (cpInterval < 1) cpInterval = 5;
+
+    m_autoCheckpointCheck->setChecked(cpEnabled);
+    m_checkpointIntervalEdit->setEnabled(cpEnabled);
+    m_checkpointIntervalEdit->setText(QString::number(cpInterval));
+    if (m_scanner) {
+        m_scanner->setCheckpointEnabled(cpEnabled);
+        m_scanner->setCheckpointInterval(cpInterval);
+    }
+
+    connect(m_autoCheckpointCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        m_checkpointIntervalEdit->setEnabled(checked);
+        if (m_scanner) m_scanner->setCheckpointEnabled(checked);
+        QSettings settings("MasscanCommunity", "MasscanGUI");
+        settings.setValue("autoCheckpoint", checked);
+    });
+
+    connect(m_checkpointIntervalEdit, &QLineEdit::textChanged, this, [this](const QString& txt) {
+        bool ok = false;
+        int sec = txt.toInt(&ok);
+        if (ok && sec >= 1) {
+            if (m_scanner) m_scanner->setCheckpointInterval(sec);
+            QSettings settings("MasscanCommunity", "MasscanGUI");
+            settings.setValue("checkpointInterval", sec);
+        }
+    });
+
+    if (m_scanner && m_scanner->canResume()) {
+        m_btnStart->setPpsState(PpsState::Paused);
+        m_btnStop->setEnabled(true);
+        if (m_btnStartNarrow) {
+            m_btnStartNarrow->setPpsState(PpsState::Paused);
+        }
+        if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
+        handleLogLine(QString("[%1] Found previous paused scan session (paused.conf). Click 'Resume Scan' to continue or 'Stop' to discard.")
+                          .arg(QTime::currentTime().toString("HH:mm:ss")));
+    }
 }
 
 void MainWindow::setupUi() {
@@ -174,10 +216,12 @@ void MainWindow::createHeader() {
     m_logoLabel = new QLabel(m_headerWidget);
     qreal dpr = devicePixelRatioF();
     m_logoLabel->setPixmap(Icons::renderSvgFile(":/Icon.svg", 22, dpr));
+    m_logoLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     layout->addWidget(m_logoLabel);
 
     m_titleLabel = new QLabel("MasscanGUI", m_headerWidget);
     m_titleLabel->setObjectName("appTitle");
+    m_titleLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     layout->addWidget(m_titleLabel);
 
     layout->addStretch(1);
@@ -732,6 +776,20 @@ CardWidget* MainWindow::createSidebar() {
 
     oLayout->addWidget(makeComboField("Verbosity", m_verboseCombo, {"normal", "-v", "-vv"}));
 
+    // Checkpoint & Resume Settings
+    m_autoCheckpointCheck = new JellyCheckBox("Auto-save resume state (paused.conf)");
+    m_autoCheckpointCheck->setChecked(true);
+    m_autoCheckpointCheck->setToolTip("Automatically writes paused.conf periodically so scan can resume if closed");
+
+    m_checkpointIntervalEdit = new QLineEdit();
+    m_checkpointIntervalEdit->setToolTip("Checkpoint interval in seconds (default: 5)");
+
+    auto* cpRow = new QHBoxLayout();
+    cpRow->setSpacing(8);
+    cpRow->addWidget(m_autoCheckpointCheck, 1);
+    cpRow->addWidget(makeField("Interval (s)", m_checkpointIntervalEdit, "5"));
+    oLayout->addLayout(cpRow);
+
     secOut->setContentLayout(oLayout);
     m_sections.push_back(secOut);
     contentLayout->addWidget(secOut);
@@ -802,34 +860,16 @@ CardWidget* MainWindow::createSidebar() {
     actionBar->setFixedHeight(52);
 
     auto* actLayout = new QHBoxLayout(actionBar);
-    // Align side margins (10px) with scrollContent sections above
     actLayout->setContentsMargins(10, 10, 10, 10);
     actLayout->setSpacing(8);
 
-    m_btnStart = new GlitchButton("Start Scan", actionBar);
-    m_btnStart->setProperty("class", "primary");
-    m_btnStart->setFixedHeight(32);
-
-    m_btnStop = new QPushButton(actionBar);
-    m_btnStop->setProperty("compact", true);
-    m_btnStop->setToolTip("Stop");
-    m_btnStop->setFixedSize(32, 32);
+    m_btnStart = new PpsMainButton(actionBar);
+    m_btnStop = new PpsIconButton(PpsIconButton::Kind::Stop, actionBar);
     m_btnStop->setEnabled(false);
-
-    m_btnResume = new QPushButton(actionBar);
-    m_btnResume->setProperty("compact", true);
-    m_btnResume->setToolTip("Resume");
-    m_btnResume->setFixedSize(32, 32);
-    m_btnResume->setEnabled(false);
-
-    m_btnOpenFolder = new QPushButton(actionBar);
-    m_btnOpenFolder->setProperty("compact", true);
-    m_btnOpenFolder->setToolTip("Open Folder");
-    m_btnOpenFolder->setFixedSize(32, 32);
+    m_btnOpenFolder = new PpsIconButton(PpsIconButton::Kind::Folder, actionBar);
 
     actLayout->addWidget(m_btnStart, 1);
     actLayout->addWidget(m_btnStop);
-    actLayout->addWidget(m_btnResume);
     actLayout->addWidget(m_btnOpenFolder);
 
     sidebarLayout->addWidget(actionBar);
@@ -848,7 +888,6 @@ CardWidget* MainWindow::createSidebar() {
 
     connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
     connect(m_btnStop, &QPushButton::clicked, this, &MainWindow::onStopScan);
-    connect(m_btnResume, &QPushButton::clicked, this, &MainWindow::onResumeScan);
     connect(m_btnOpenFolder, &QPushButton::clicked, this, &MainWindow::onOpenOutputFolder);
 
     // Output format selection updates default file name (matching Slint OutputSection)
@@ -908,35 +947,17 @@ QWidget* MainWindow::createRightColumn() {
     nActLayout->setContentsMargins(10, 10, 10, 10);
     nActLayout->setSpacing(8);
 
-    m_btnStartNarrow = new GlitchButton("Start Scan", m_narrowActionCard);
-    m_btnStartNarrow->setProperty("class", "primary");
-    m_btnStartNarrow->setFixedHeight(32);
-
-    m_btnStopNarrow = new QPushButton(m_narrowActionCard);
-    m_btnStopNarrow->setProperty("compact", true);
-    m_btnStopNarrow->setToolTip("Stop");
-    m_btnStopNarrow->setFixedSize(32, 32);
+    m_btnStartNarrow = new PpsMainButton(m_narrowActionCard);
+    m_btnStopNarrow = new PpsIconButton(PpsIconButton::Kind::Stop, m_narrowActionCard);
     m_btnStopNarrow->setEnabled(false);
-
-    m_btnResumeNarrow = new QPushButton(m_narrowActionCard);
-    m_btnResumeNarrow->setProperty("compact", true);
-    m_btnResumeNarrow->setToolTip("Resume");
-    m_btnResumeNarrow->setFixedSize(32, 32);
-    m_btnResumeNarrow->setEnabled(false);
-
-    m_btnOpenFolderNarrow = new QPushButton(m_narrowActionCard);
-    m_btnOpenFolderNarrow->setProperty("compact", true);
-    m_btnOpenFolderNarrow->setToolTip("Open Folder");
-    m_btnOpenFolderNarrow->setFixedSize(32, 32);
+    m_btnOpenFolderNarrow = new PpsIconButton(PpsIconButton::Kind::Folder, m_narrowActionCard);
 
     nActLayout->addWidget(m_btnStartNarrow, 1);
     nActLayout->addWidget(m_btnStopNarrow);
-    nActLayout->addWidget(m_btnResumeNarrow);
     nActLayout->addWidget(m_btnOpenFolderNarrow);
 
     connect(m_btnStartNarrow, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
     connect(m_btnStopNarrow, &QPushButton::clicked, this, &MainWindow::onStopScan);
-    connect(m_btnResumeNarrow, &QPushButton::clicked, this, &MainWindow::onResumeScan);
     connect(m_btnOpenFolderNarrow, &QPushButton::clicked, this, &MainWindow::onOpenOutputFolder);
 
     layout->addWidget(m_narrowActionCard);
@@ -1062,6 +1083,11 @@ QWidget* MainWindow::createRightColumn() {
     m_resultsTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_resultsTable->setColumnCount(6);
     m_resultsTable->setHorizontalHeaderLabels({"IP", "Port", "Proto", "Service", "Status", "Time"});
+    for (int col = 0; col < 6; ++col) {
+        if (auto* it = m_resultsTable->horizontalHeaderItem(col)) {
+            it->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        }
+    }
     m_resultsTable->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_resultsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_resultsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -1716,17 +1742,13 @@ void MainWindow::onStartScan() {
 
     if (m_scanner->startScan(actualProgram, args, false)) {
         m_btnStart->setEnabled(true);
-        m_btnStart->setText("Pause");
-        m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+        m_btnStart->setPpsState(PpsState::Playing);
         m_btnStop->setEnabled(true);
-        m_btnResume->setEnabled(false);
         if (m_btnStartNarrow) {
             m_btnStartNarrow->setEnabled(true);
-            m_btnStartNarrow->setText("Pause");
-            m_btnStartNarrow->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+            m_btnStartNarrow->setPpsState(PpsState::Playing);
         }
         if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
-        if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
         if (m_menuOpen) setDrawerOpen(false, true);
     }
 }
@@ -1735,34 +1757,26 @@ void MainWindow::onPauseScan() {
     if (!m_scanner) return;
     m_scanner->pauseScan();
     m_btnStart->setEnabled(true);
-    m_btnStart->setText("Resume");
-    m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+    m_btnStart->setPpsState(PpsState::Paused);
     m_btnStop->setEnabled(true);
-    m_btnResume->setEnabled(true);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setText("Resume");
-        m_btnStartNarrow->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+        m_btnStartNarrow->setPpsState(PpsState::Paused);
     }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
-    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(true);
 }
 
 void MainWindow::onStopScan() {
     if (!m_scanner) return;
     m_scanner->stopScan();
     m_btnStart->setEnabled(true);
-    m_btnStart->setText("Start Scan");
-    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+    m_btnStart->setPpsState(PpsState::Idle);
     m_btnStop->setEnabled(false);
-    m_btnResume->setEnabled(m_scanner->canResume());
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setText("Start Scan");
-        m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+        m_btnStartNarrow->setPpsState(PpsState::Idle);
     }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
-    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(m_scanner->canResume());
 }
 
 void MainWindow::onResumeScan() {
@@ -1771,17 +1785,13 @@ void MainWindow::onResumeScan() {
     if (m_scanner->isPaused()) {
         m_scanner->resumeScan();
         m_btnStart->setEnabled(true);
-        m_btnStart->setText("Pause");
-        m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+        m_btnStart->setPpsState(PpsState::Playing);
         m_btnStop->setEnabled(true);
-        m_btnResume->setEnabled(false);
         if (m_btnStartNarrow) {
             m_btnStartNarrow->setEnabled(true);
-            m_btnStartNarrow->setText("Pause");
-            m_btnStartNarrow->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+            m_btnStartNarrow->setPpsState(PpsState::Playing);
         }
         if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
-        if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
         return;
     }
 
@@ -1791,17 +1801,13 @@ void MainWindow::onResumeScan() {
     QString bin = resolveProgramPath(rawBin);
     m_scanner->resumeScan(bin);
     m_btnStart->setEnabled(true);
-    m_btnStart->setText("Pause");
-    m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+    m_btnStart->setPpsState(PpsState::Playing);
     m_btnStop->setEnabled(true);
-    m_btnResume->setEnabled(false);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setText("Pause");
-        m_btnStartNarrow->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+        m_btnStartNarrow->setPpsState(PpsState::Playing);
     }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
-    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
     if (m_menuOpen) setDrawerOpen(false, true);
 }
 
@@ -1882,14 +1888,12 @@ void MainWindow::updateThemeDependentAssets() {
     m_btnClearTargets->setIcon(Icons::get(Icons::Trash, icoCol, 16));
     m_btnImportTargets->setIcon(Icons::get(Icons::Import, icoCol, 16));
 
-    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
-    m_btnStop->setIcon(Icons::get(Icons::Stop, icoCol, 16));
-    m_btnResume->setIcon(Icons::get(Icons::Resume, icoCol, 16));
-    m_btnOpenFolder->setIcon(Icons::get(Icons::Folder, icoCol, 16));
-    if (m_btnStartNarrow)      m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
-    if (m_btnStopNarrow)       m_btnStopNarrow->setIcon(Icons::get(Icons::Stop, icoCol, 16));
-    if (m_btnResumeNarrow)     m_btnResumeNarrow->setIcon(Icons::get(Icons::Resume, icoCol, 16));
-    if (m_btnOpenFolderNarrow) m_btnOpenFolderNarrow->setIcon(Icons::get(Icons::Folder, icoCol, 16));
+    m_btnStart->setDarkTheme(m_isDarkTheme);
+    m_btnStop->setDarkTheme(m_isDarkTheme);
+    m_btnOpenFolder->setDarkTheme(m_isDarkTheme);
+    if (m_btnStartNarrow)      m_btnStartNarrow->setDarkTheme(m_isDarkTheme);
+    if (m_btnStopNarrow)       m_btnStopNarrow->setDarkTheme(m_isDarkTheme);
+    if (m_btnOpenFolderNarrow) m_btnOpenFolderNarrow->setDarkTheme(m_isDarkTheme);
 
     if (m_btnCopy && !m_terminalBox) m_btnCopy->setIcon(Icons::get(Icons::Copy, icoCol, 16));
     if (m_btnExport) m_btnExport->setIcon(Icons::get(Icons::Export, icoCol, 16));
@@ -2421,6 +2425,16 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     updateCommandCardHeight();
 }
 
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (m_scanner && (m_scanner->isRunning() || m_scanner->isPaused())) {
+        if (m_autoCheckpointCheck && m_autoCheckpointCheck->isChecked()) {
+            m_scanner->writeCheckpoint();
+        }
+        m_scanner->stopScan(false); // Keep paused.conf so session can be resumed later
+    }
+    QMainWindow::closeEvent(event);
+}
+
 void MainWindow::layoutBodyWidgets() {
     if (!m_bodyContainer || !m_sidebarCard || !m_rightColumn) return;
 
@@ -2519,12 +2533,27 @@ void MainWindow::applyResponsiveLayout(int winWidth) {
     m_footerEtaLabel->setVisible(winWidth >= 600);
     m_footerKppsLabel->setVisible(winWidth >= 740);
 
-    // Responsive Badges matching Slint: root.win-w >= 820px ? 0 : root.win-w >= 480px ? 1 : 2
-    int badgeMode = (winWidth >= 820) ? 0 : (winWidth >= 480 ? 1 : 2);
+    // Responsive Badges:
+    // winWidth >= 880: Full mode (0) - dot + name + info (or "Star on GitHub")
+    // 630 <= winWidth < 880: Compact mode (1) - dot + name (or "Star")
+    // winWidth < 630: Mini mode (2) - dot only (or GitHub circle icon)
+    int badgeMode = (winWidth >= 880) ? 0 : (winWidth >= 630 ? 1 : 2);
     m_masscanBadge->setMode(badgeMode);
     m_npcapBadge->setMode(badgeMode);
     if (m_githubBtn) {
         m_githubBtn->setMode(badgeMode);
+    }
+
+    if (m_headerWidget) {
+        if (auto* hl = qobject_cast<QHBoxLayout*>(m_headerWidget->layout())) {
+            if (winWidth < 480) {
+                hl->setContentsMargins(10, 0, 8, 0);
+                hl->setSpacing(6);
+            } else {
+                hl->setContentsMargins(16, 0, 12, 0);
+                hl->setSpacing(8);
+            }
+        }
     }
 
     layoutBodyWidgets();
@@ -2609,18 +2638,15 @@ void MainWindow::handleLogLine(const QString& line) {
 void MainWindow::handleScanFinished(int exitCode, bool normalExit) {
     Q_UNUSED(exitCode);
     Q_UNUSED(normalExit);
+    bool canResume = m_scanner && m_scanner->canResume();
     m_btnStart->setEnabled(true);
-    m_btnStart->setText("Start Scan");
-    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
-    m_btnStop->setEnabled(false);
-    m_btnResume->setEnabled(m_scanner->canResume());
+    m_btnStart->setPpsState(canResume ? PpsState::Paused : PpsState::Idle);
+    m_btnStop->setEnabled(canResume);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setText("Start Scan");
-        m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+        m_btnStartNarrow->setPpsState(canResume ? PpsState::Paused : PpsState::Idle);
     }
-    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
-    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(m_scanner->canResume());
+    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(canResume);
     m_footerDot->setStyleSheet("background-color: #8b97a8; border-radius: 4px;");
 }
 

@@ -335,6 +335,7 @@ QString getDarkStyle() {
             font-family: "Segoe UI";
             font-size: 13px;
             font-weight: 400;
+            text-align: left;
         }
 
         /* TextEdit / Log */
@@ -833,6 +834,7 @@ QString getLightStyle() {
             font-family: "Segoe UI";
             font-size: 13px;
             font-weight: 400;
+            text-align: left;
         }
 
         /* TextEdit / Log */

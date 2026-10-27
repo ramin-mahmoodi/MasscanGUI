@@ -26,7 +26,20 @@ public:
     bool startScan(const QString& program, const QStringList& args, bool simulate = false);
     void pauseScan();
     void resumeScan(const QString& program = QString());
-    void stopScan();
+    void stopScan(bool clearCheckpoint = true);
+    void writeCheckpoint();
+    void deleteCheckpoint();
+
+    void setCheckpointEnabled(bool enabled) noexcept { m_checkpointEnabled = enabled; }
+    [[nodiscard]] bool isCheckpointEnabled() const noexcept { return m_checkpointEnabled; }
+    void setCheckpointInterval(int seconds) noexcept {
+        m_checkpointIntervalSec = std::max(1, seconds);
+        if (m_checkpointTimer && m_checkpointTimer->isActive()) {
+            m_checkpointTimer->start(m_checkpointIntervalSec * 1000);
+        }
+    }
+    [[nodiscard]] int checkpointInterval() const noexcept { return m_checkpointIntervalSec; }
+
     void resetFoundCount() noexcept { m_found = 0; }
     [[nodiscard]] int foundCount() const noexcept { return m_found; }
     static QString lookupServiceName(int port, const QString& proto);
@@ -60,11 +73,17 @@ private:
     QProcess* m_process{nullptr};
     QTimer* m_simTimer{nullptr};
     QTimer* m_tailTimer{nullptr};
+    QTimer* m_checkpointTimer{nullptr};
     State m_state{State::Idle};
     bool m_simulate{false};
     bool m_canResume{false};
     bool m_userStopped{false};
     bool m_isSuspended{false};
+    bool m_checkpointEnabled{true};
+    int m_checkpointIntervalSec{5};
+    uint64_t m_totalProbes{0};
+    uint64_t m_currentResumeIndex{0};
+    QString m_baseEchoConf;
     QString m_lastProgram;
 
     QByteArray m_stdoutBuf;

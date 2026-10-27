@@ -36,7 +36,7 @@ add_executable(MasscanGUI WIN32
     src/ui/high_hz_animator.hpp
     src/ui/hamburger_button.hpp
     src/ui/jelly_checkbox.hpp
-    src/ui/glitch_button.hpp
+    src/ui/pps_button.hpp
     src/ui/github_button.hpp
     src/ui/terminal_box.hpp
     src/ui/sliding_stacked_widget.hpp

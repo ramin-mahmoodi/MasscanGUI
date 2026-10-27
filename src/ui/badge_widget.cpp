@@ -25,6 +25,7 @@ BadgeWidget::BadgeWidget(const QString& name, QWidget* parent)
     : QWidget(parent),
       m_name(name) {
 
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     setFixedHeight(26);
     setCursor(Qt::PointingHandCursor);
     setToolTip("Click to re-check dependencies");
@@ -44,6 +45,7 @@ BadgeWidget::BadgeWidget(const QString& name, QWidget* parent)
     };
 
     updateTone();
+    setFixedSize(sizeHint());
     updateGeometry();
 }
 
@@ -64,6 +66,7 @@ void BadgeWidget::setStatus(int state, const QString& info, bool isDark) {
         }
     }
 
+    setFixedSize(sizeHint());
     updateGeometry();
     update();
 }
@@ -71,12 +74,14 @@ void BadgeWidget::setStatus(int state, const QString& info, bool isDark) {
 void BadgeWidget::setMode(int mode) {
     if (m_mode == mode) return;
     m_mode = mode;
+    setFixedSize(sizeHint());
     updateGeometry();
     update();
 }
 
 void BadgeWidget::setDownloadSupported(bool supported) {
     m_downloadSupported = supported;
+    setFixedSize(sizeHint());
     updateGeometry();
     update();
 }
@@ -90,6 +95,7 @@ void BadgeWidget::startDownloadAnimation() {
         m_bobTimer->stop();
         m_bobAngle = 0.0;
     }
+    setFixedSize(sizeHint());
     update();
 }
 
@@ -137,6 +143,7 @@ void BadgeWidget::resetDownload() {
         m_bobTimer->stop();
         m_bobAngle = 0.0;
     }
+    setFixedSize(sizeHint());
     update();
 }
 

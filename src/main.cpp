@@ -10,7 +10,6 @@
 #include "core/geo.hpp"
 #include "ui/main_window.hpp"
 #include "ui/collapsible_section.hpp"
-#include "ui/glitch_button.hpp"
 #include "ui/theme.hpp"
 #include "ui/fluent_tooltip.hpp"
 
@@ -19,7 +18,7 @@ int main(int argc, char* argv[]) {
         Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     QApplication app(argc, argv);
     app.setApplicationName("MasscanGUI");
-    app.setApplicationVersion("1.0.0");
+    app.setApplicationVersion("1.0.3");
     app.setOrganizationName("MasscanCommunity");
     app.setWindowIcon(QIcon(":/Icon.ico"));
 
@@ -167,23 +166,7 @@ int main(int argc, char* argv[]) {
             std::cout << "[INFO] Multi-select screenshot saved to " << argv[i + 1] << std::endl;
             return 0;
         }
-        if (std::string(argv[i]) == "--render-glitch-screenshot" && i + 1 < argc) {
-            masscan::ui::MainWindow win;
-            win.resize(1100, 750);
-            win.show();
-            app.processEvents();
 
-            auto* gbtn = win.findChild<masscan::ui::GlitchButton*>();
-            if (gbtn) {
-                gbtn->triggerGlitchAt(0.0);
-                app.processEvents();
-            }
-
-            QPixmap pm = win.grab();
-            pm.save(argv[i + 1]);
-            std::cout << "[INFO] Glitch screenshot saved to " << argv[i + 1] << std::endl;
-            return 0;
-        }
         if (std::string(argv[i]) == "--test") {
             std::cout << "[TEST] Running self-check..." << std::endl;
             if (!geoLoaded) {
