@@ -11,27 +11,30 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows Static Release
+    name: Build Windows Release
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Static Qt 6 (MinGW UCRT)
-        uses: orestonce/install-qt-static@v0.4.3
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
         with:
-          version: 'Qt6.5.3-Windows-x86_64-MinGW13.2.0-ucrt-staticFull-20240527'
+          version: '6.8.0'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
 
       - name: Configure CMake
-        run: |
-          cmake -B build -G "MinGW Makefiles" `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/qt_static_install/qt_install"
+        run: cmake -B build -S .
 
       - name: Build MasscanGUI
         run: cmake --build build --config Release
 
-      - name: Package Release Archive
+      - name: Deploy Only Vital Dependencies
         shell: pwsh
         run: |
           $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
@@ -40,31 +43,111 @@ jobs:
             exit 1
           }
           $exe = $exeItem.FullName
-          Write-Output "Found built binary at: $exe"
+          $outDir = Split-Path -Parent $exe
+          Write-Output "Deploying dependencies to: $outDir for binary: $exe"
 
-          $distDir = New-Item -ItemType Directory -Path "dist_package" -Force
-          Copy-Item $exe -Destination $distDir.FullName -Force
-
-          # Copy data folder alongside MasscanGUI.exe
-          if (Test-Path "data") {
-            Copy-Item -Recurse -Force "data" $distDir.FullName
-          }
-
-          # Verify static build: No DLL files should exist in the package
-          $dlls = Get-ChildItem -Path $distDir.FullName -Recurse -Filter "*.dll"
-          Write-Output "DLLs in package: $($dlls.Count)"
-          if ($dlls.Count -gt 0) {
-            Write-Error "Verification failed: DLLs found in static release package!"
+          # 1. Locate windeployqt
+          $windeployCmd = Get-Command "windeployqt.exe" -ErrorAction SilentlyContinue
+          if (-not $windeployCmd) {
+            Write-Error "windeployqt.exe not found in PATH!"
             exit 1
           }
+          $windeploy = $windeployCmd.Source
+          Write-Output "Found windeployqt at: $windeploy"
 
-          $exeSize = (Get-Item (Join-Path $distDir.FullName "MasscanGUI.exe")).Length
-          Write-Output "MasscanGUI.exe size: $([math]::Round($exeSize / 1MB, 2)) MB ($exeSize bytes)"
+          # 2. Run windeployqt without software opengl
+          & $windeploy --release --no-translations --no-opengl-sw --no-compiler-runtime --dir "$outDir" "$exe"
 
+          # 3. Copy only essential MSVC CRT runtime libraries
+          $crt = Get-ChildItem -Path "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($crt) {
+            $vitalCrt = @(
+              "vcruntime140.dll",
+              "vcruntime140_1.dll",
+              "msvcp140.dll",
+              "msvcp140_1.dll",
+              "msvcp140_2.dll",
+              "msvcp140_atomic_wait.dll"
+            )
+            foreach ($dll in $vitalCrt) {
+              $srcFile = Join-Path $crt.FullName $dll
+              if (Test-Path $srcFile) {
+                Copy-Item $srcFile -Destination "$outDir" -Force
+                Write-Output "Bundled CRT library: $dll"
+              }
+            }
+          }
+
+          # 4. Strip all heavy/unnecessary files and folders
+          $unneeded = @(
+            "opengl32sw.dll",
+            "dxcompiler.dll",
+            "dxil.dll",
+            "d3dcompiler_47.dll",
+            "concrt140.dll",
+            "vccorlib140.dll",
+            "msvcp140_codecvt_ids.dll",
+            "generic",
+            "styles",
+            "networkinformation",
+            "tls/qcertonlybackend.dll"
+          )
+          foreach ($item in $unneeded) {
+            $p = Join-Path $outDir $item
+            if (Test-Path $p) {
+              Remove-Item -Recurse -Force $p
+              Write-Output "Removed non-essential: $item"
+            }
+          }
+
+          # 5. In imageformats, keep ONLY qico.dll and qsvg.dll
+          $imgDir = Join-Path $outDir "imageformats"
+          if (Test-Path $imgDir) {
+            Get-ChildItem -Path $imgDir -Exclude "qico.dll","qsvg.dll" | Remove-Item -Force
+          }
+
+          # 6. Copy data directory cleanly
+          if (Test-Path "data") {
+            Copy-Item -Recurse -Force "data" "$outDir"
+          }
+
+          # 7. Verify all vital files exist
+          $vitalFiles = @(
+            "MasscanGUI.exe",
+            "Qt6Core.dll",
+            "Qt6Gui.dll",
+            "Qt6Widgets.dll",
+            "Qt6Network.dll",
+            "Qt6Svg.dll",
+            "vcruntime140.dll",
+            "msvcp140.dll",
+            "platforms/qwindows.dll",
+            "iconengines/qsvgicon.dll",
+            "tls/qschannelbackend.dll",
+            "data/geo.bin"
+          )
+          foreach ($f in $vitalFiles) {
+            if (-not (Test-Path "$outDir/$f")) {
+              Write-Error "Vital dependency missing from deployment: $f"
+              exit 1
+            }
+          }
+
+          $allFiles = Get-ChildItem -Path "$outDir" -Recurse -File
+          Write-Output "Total files in final package: $($allFiles.Count)"
+          foreach ($f in $allFiles) {
+            Write-Output "  $($f.FullName.Replace($outDir, '')) ($($f.Length) bytes)"
+          }
+
+      - name: Package Release Archive
+        shell: pwsh
+        run: |
+          $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
+          $outDir = Split-Path -Parent $exeItem.FullName
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v1.0.0" }
           $zipName = "MasscanGUI-$tag-windows-x64.zip"
-          Write-Output "Archiving from $($distDir.FullName) to $zipName"
-          Compress-Archive -Path "$($distDir.FullName)/*" -DestinationPath $zipName -Force
+          Write-Output "Archiving from $outDir to $zipName"
+          Compress-Archive -Path "$outDir/*" -DestinationPath $zipName -Force
           $size = (Get-Item $zipName).Length
           Write-Output "Release archive created: $zipName ($size bytes)"
 

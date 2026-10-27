@@ -49,8 +49,6 @@ target_link_libraries(MasscanGUI PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Ne
 target_compile_definitions(MasscanGUI PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 if (MSVC)
     target_link_options(MasscanGUI PRIVATE "/ENTRY:mainCRTStartup")
-elseif (MINGW)
-    target_link_options(MasscanGUI PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
 if (WIN32)
