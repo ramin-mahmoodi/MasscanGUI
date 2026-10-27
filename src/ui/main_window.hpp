@@ -91,6 +91,7 @@ private:
     QWidget* createRightColumn();
     void createFooter();
     void checkDependencies();
+    bool promptAndDownloadMasscan(bool silentCheck = false);
     void applyResponsiveLayout(int winWidth);
     void layoutBodyWidgets();
     void setDrawerOpen(bool open, bool animate = true);

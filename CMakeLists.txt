@@ -54,9 +54,6 @@ endif()
 if (WIN32)
     add_custom_command(
         TARGET MasscanGUI POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/masscan.exe"
-            "$<TARGET_FILE_DIR:MasscanGUI>/masscan.exe"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/data"
             "$<TARGET_FILE_DIR:MasscanGUI>/data"

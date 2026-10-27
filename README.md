@@ -19,6 +19,7 @@ Designed with Microsoft Fluent design principles, animated transitions, light/da
 - **Memory & UI Protection**:
   - Duplicate SYN-ACK packet elimination.
   - Automatic GUI table row capping to prevent thread freezing on internet-scale scans.
+- **Automatic Binary Downloader**: If `masscan.exe` is not detected next to the app, MasscanGUI prompts for user consent and downloads the latest official Windows binary directly from [ramin-mahmoodi/Masscan](https://github.com/ramin-mahmoodi/Masscan/releases).
 - **Dependency Health Indicators**: Real-time header badges detecting presence and status of both `masscan` and `Npcap`/`WinPcap`.
 
 ---

@@ -24,6 +24,11 @@
 #include <QTextStream>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QProgressDialog>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QEventLoop>
 #include <QScrollBar>
 #include <QTimer>
 #include <QPropertyAnimation>
@@ -1631,6 +1636,10 @@ void MainWindow::onStartScan() {
     }
 
     bool realBinaryExists = QFileInfo::exists(actualProgram) && QFileInfo(actualProgram).isFile();
+    if (!realBinaryExists && promptAndDownloadMasscan(false)) {
+        actualProgram = QCoreApplication::applicationDirPath() + "/masscan.exe";
+        realBinaryExists = QFileInfo::exists(actualProgram) && QFileInfo(actualProgram).isFile();
+    }
     bool simulate = !realBinaryExists;
 
     if (m_scanner->startScan(actualProgram, args, simulate)) {
@@ -1892,6 +1901,153 @@ void MainWindow::onToggleSidebarMenu() {
 
 void MainWindow::onRecheckDependencies() {
     checkDependencies();
+    if (m_masscanState == 0) {
+        promptAndDownloadMasscan(false);
+    }
+}
+
+bool MainWindow::promptAndDownloadMasscan(bool silentCheck) {
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString targetExe = appDir + "/masscan.exe";
+
+    if (QFileInfo::exists(targetExe) && QFileInfo(targetExe).isFile()) {
+        return true;
+    }
+    if (QFileInfo::exists("masscan.exe") && QFileInfo("masscan.exe").isFile()) {
+        return true;
+    }
+    if (silentCheck) {
+        return false;
+    }
+
+    // 1. Ask permission
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("Masscan Required");
+    msgBox.setText("The Masscan executable ('masscan.exe') was not found next to MasscanGUI.");
+    msgBox.setInformativeText("Would you like to automatically download the latest official release from GitHub?\n\nSource: https://github.com/ramin-mahmoodi/Masscan");
+    msgBox.setIcon(QMessageBox::Question);
+    auto* btnDownload = msgBox.addButton("Download Masscan", QMessageBox::AcceptRole);
+    auto* btnCancel = msgBox.addButton("Cancel", QMessageBox::RejectRole);
+    msgBox.setDefaultButton(btnDownload);
+    msgBox.exec();
+
+    if (msgBox.clickedButton() != btnDownload) {
+        handleLogLine(QString("[%1] Masscan download declined by user.").arg(QTime::currentTime().toString("HH:mm:ss")));
+        return false;
+    }
+
+    // 2. Prepare download
+    QUrl downloadUrl("https://github.com/ramin-mahmoodi/Masscan/releases/latest/download/masscan-windows-x86_64.zip");
+    QString tmpZipPath = QDir::tempPath() + "/masscan-windows-x86_64.zip";
+
+    QProgressDialog progress(this);
+    progress.setWindowTitle("Downloading Masscan");
+    progress.setLabelText("Connecting to GitHub releases...");
+    progress.setRange(0, 100);
+    progress.setValue(0);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+    QApplication::processEvents();
+
+    QNetworkAccessManager nam;
+    QNetworkRequest request(downloadUrl);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "MasscanGUI/1.0");
+
+    QNetworkReply* reply = nam.get(request);
+
+    QFile file(tmpZipPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        progress.close();
+        QMessageBox::critical(this, "Download Error", "Could not create temporary file in:\n" + tmpZipPath);
+        return false;
+    }
+
+    bool userCancelled = false;
+    connect(&progress, &QProgressDialog::canceled, [&]() {
+        userCancelled = true;
+        reply->abort();
+    });
+
+    connect(reply, &QNetworkReply::downloadProgress, [&](qint64 bytesReceived, qint64 bytesTotal) {
+        if (bytesTotal > 0) {
+            int pct = static_cast<int>((bytesReceived * 100) / bytesTotal);
+            progress.setValue(pct);
+            progress.setLabelText(QString("Downloading masscan: %1% (%2 KB / %3 KB)")
+                                      .arg(pct)
+                                      .arg(bytesReceived / 1024)
+                                      .arg(bytesTotal / 1024));
+        } else {
+            progress.setLabelText(QString("Downloading masscan: %1 KB received").arg(bytesReceived / 1024));
+        }
+    });
+
+    connect(reply, &QNetworkReply::readyRead, [&]() {
+        file.write(reply->readAll());
+    });
+
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    file.flush();
+    file.close();
+
+    if (userCancelled) {
+        QFile::remove(tmpZipPath);
+        handleLogLine(QString("[%1] Download canceled by user.").arg(QTime::currentTime().toString("HH:mm:ss")));
+        return false;
+    }
+
+    if (reply->error() != QNetworkReply::NoError) {
+        QString errStr = reply->errorString();
+        reply->deleteLater();
+        QFile::remove(tmpZipPath);
+        progress.close();
+        QMessageBox::critical(this, "Download Failed", "Failed to download Masscan from GitHub:\n" + errStr);
+        return false;
+    }
+
+    reply->deleteLater();
+    progress.setLabelText("Extracting masscan.exe...");
+    progress.setValue(100);
+    QApplication::processEvents();
+
+    // 3. Extract masscan.exe
+    bool extracted = false;
+    int code = QProcess::execute("tar.exe", {"-xf", tmpZipPath, "-C", appDir});
+    if (code == 0 && QFileInfo::exists(targetExe)) {
+        extracted = true;
+    }
+
+    if (!extracted) {
+        QString psCmd = QString("Expand-Archive -Path '%1' -DestinationPath '%2' -Force").arg(tmpZipPath, appDir);
+        QProcess::execute("powershell.exe", {"-NoProfile", "-Command", psCmd});
+        if (QFileInfo::exists(targetExe)) {
+            extracted = true;
+        }
+    }
+
+    QFile::remove(tmpZipPath);
+    progress.close();
+
+    if (!extracted) {
+        QMessageBox::warning(this, "Extraction Failed", 
+            "Downloaded archive could not be extracted automatically.\n"
+            "Please extract masscan.exe manually to:\n" + targetExe);
+        return false;
+    }
+
+    // 4. Update dependencies and UI
+    checkDependencies();
+    updateCommandAndValidation();
+
+    handleLogLine(QString("[%1] Masscan successfully downloaded and installed to %2").arg(QTime::currentTime().toString("HH:mm:ss"), targetExe));
+    QMessageBox::information(this, "Installation Complete", 
+        "Masscan has been successfully downloaded and placed next to MasscanGUI!\n\nLocation: " + targetExe);
+
+    return true;
 }
 
 void MainWindow::checkDependencies() {
@@ -1947,6 +2103,16 @@ void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     applyResponsiveLayout(width());
     updateCommandCardHeight();
+
+    static bool initialMasscanChecked = false;
+    if (!initialMasscanChecked) {
+        initialMasscanChecked = true;
+        QTimer::singleShot(400, this, [this]() {
+            if (m_masscanState == 0) {
+                promptAndDownloadMasscan(false);
+            }
+        });
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
