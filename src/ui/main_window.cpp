@@ -1559,9 +1559,14 @@ void MainWindow::updateCommandAndValidation() {
     updateCommandCardHeight();
 
     bool canStart = !hasErr && (!manualTargets.empty() || !countryCodes.empty() || s.all_ipv4 || !s.conffile.empty() || s.mode >= 3);
-    bool startAllowed = canStart && !m_scanner->isRunning();
+    bool isScanning = m_scanner && m_scanner->isRunning();
+    bool startAllowed = canStart && !isScanning;
     m_btnStart->setEnabled(startAllowed);
-    if (m_btnStartNarrow) m_btnStartNarrow->setEnabled(startAllowed);
+    m_btnStart->setText(isScanning ? "Scanning..." : "Start Scan");
+    if (m_btnStartNarrow) {
+        m_btnStartNarrow->setEnabled(startAllowed);
+        m_btnStartNarrow->setText(isScanning ? "Scanning..." : "Start Scan");
+    }
 }
 
 void MainWindow::updateCommandCardHeight() {
@@ -1682,9 +1687,15 @@ void MainWindow::onStartScan() {
 
     if (m_scanner->startScan(actualProgram, args, false)) {
         m_btnStart->setEnabled(false);
+        m_btnStart->setText("Scanning...");
+        m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
         m_btnStop->setEnabled(true);
         m_btnResume->setEnabled(false);
-        if (m_btnStartNarrow) m_btnStartNarrow->setEnabled(false);
+        if (m_btnStartNarrow) {
+            m_btnStartNarrow->setEnabled(false);
+            m_btnStartNarrow->setText("Scanning...");
+            m_btnStartNarrow->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+        }
         if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
         if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
         if (m_menuOpen) setDrawerOpen(false, true);
@@ -1694,9 +1705,15 @@ void MainWindow::onStartScan() {
 void MainWindow::onStopScan() {
     m_scanner->stopScan();
     m_btnStart->setEnabled(true);
+    m_btnStart->setText("Start Scan");
+    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
     m_btnStop->setEnabled(false);
     m_btnResume->setEnabled(m_scanner->canResume());
-    if (m_btnStartNarrow) m_btnStartNarrow->setEnabled(true);
+    if (m_btnStartNarrow) {
+        m_btnStartNarrow->setEnabled(true);
+        m_btnStartNarrow->setText("Start Scan");
+        m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+    }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
     if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(m_scanner->canResume());
 }
@@ -1707,9 +1724,15 @@ void MainWindow::onResumeScan() {
     QString bin = QString::fromStdString(m_currentBuilt.args.empty() ? "masscan" : m_currentBuilt.args[0]);
     m_scanner->resumeScan(bin);
     m_btnStart->setEnabled(false);
+    m_btnStart->setText("Scanning...");
+    m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
     m_btnStop->setEnabled(true);
     m_btnResume->setEnabled(false);
-    if (m_btnStartNarrow) m_btnStartNarrow->setEnabled(false);
+    if (m_btnStartNarrow) {
+        m_btnStartNarrow->setEnabled(false);
+        m_btnStartNarrow->setText("Scanning...");
+        m_btnStartNarrow->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+    }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
     if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
     if (m_menuOpen) setDrawerOpen(false, true);
@@ -2520,9 +2543,15 @@ void MainWindow::handleScanFinished(int exitCode, bool normalExit) {
     Q_UNUSED(exitCode);
     Q_UNUSED(normalExit);
     m_btnStart->setEnabled(true);
+    m_btnStart->setText("Start Scan");
+    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
     m_btnStop->setEnabled(false);
     m_btnResume->setEnabled(m_scanner->canResume());
-    if (m_btnStartNarrow) m_btnStartNarrow->setEnabled(true);
+    if (m_btnStartNarrow) {
+        m_btnStartNarrow->setEnabled(true);
+        m_btnStartNarrow->setText("Start Scan");
+        m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+    }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
     if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(m_scanner->canResume());
     m_footerDot->setStyleSheet("background-color: #8b97a8; border-radius: 4px;");

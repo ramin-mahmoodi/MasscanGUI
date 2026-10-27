@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QDebug>
 #include <algorithm>
 
@@ -81,6 +82,7 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     }
 
     m_simulate = simulate;
+    m_userStopped = false;
     m_pct = 0.0f;
     m_kpps = 0.0;
     m_found = 0;
@@ -94,7 +96,9 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     for (int i = 0; i < args.size() - 1; ++i) {
         const QString& a = args.at(i);
         if (a == "-oD" || a == "-oJ" || a == "-oL" || a == "-oX" || a == "-oG" || a == "-oB" || a == "--output-filename") {
-            m_tailFilePath = args.at(i + 1);
+            QString rawPath = args.at(i + 1);
+            QFileInfo fi(rawPath);
+            m_tailFilePath = fi.isAbsolute() ? rawPath : QDir::current().filePath(rawPath);
             break;
         }
     }
@@ -120,6 +124,7 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     emit logLineReceived(QString("[%1] Starting masscan process: %2 %3")
                              .arg(QDateTime::currentDateTime().toString("hh:mm:ss"), program, args.join(" ")));
 
+    m_process->setWorkingDirectory(QDir::currentPath());
     m_process->setProgram(program);
     m_process->setArguments(args);
     m_process->start();
@@ -147,19 +152,19 @@ void ScannerProcess::stopScan() {
         m_tailTimer->stop();
     }
 
+    m_userStopped = true;
+
     if (m_process->state() != QProcess::NotRunning) {
         m_process->terminate();
-        if (!m_process->waitForFinished(1000)) {
+        if (!m_process->waitForFinished(500)) {
             m_process->kill();
             m_process->waitForFinished(500);
         }
     }
 
-    if (m_state == State::Scanning) {
-        m_canResume = true;
-        setState(State::Paused, "Scan stopped / paused");
-        emit logLineReceived(QString("[%1] Scan was stopped by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
-    }
+    m_canResume = true;
+    setState(State::Paused, "Scan stopped by user");
+    emit logLineReceived(QString("[%1] Scan was stopped by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
 }
 
 void ScannerProcess::resumeScan(const QString& program) {
@@ -214,7 +219,13 @@ void ScannerProcess::pollOutputFile() {
     }
     if (file.seek(m_lastTailPos)) {
         while (!file.atEnd()) {
+            qint64 beforePos = file.pos();
             QByteArray lineBytes = file.readLine();
+            if (!lineBytes.endsWith('\n') && !file.atEnd()) {
+                // Incomplete line still being written by masscan; rewind and wait for newline
+                file.seek(beforePos);
+                break;
+            }
             QString line = QString::fromUtf8(lineBytes).trimmed();
             if (!line.isEmpty()) {
                 parseOutputLine(line);
@@ -274,41 +285,79 @@ void ScannerProcess::parseOutputLine(const QString& line) {
         }
     }
 
-    // 3. Detect NDJSON / JSON format (-oD / -oJ): {"ip": "1.1.1.1", ...}
-    if (line.startsWith('{') && line.contains("\"ip\"")) {
+    // 3. Detect NDJSON / JSON format (-oD / -oJ):
+    // NDJSON (-oD): {"ip":"1.1.1.1","port":80,"proto":"tcp","rec_type":"status","data":{"status":"open",...}}
+    // Multi-port JSON (-oJ): [{"ip":"1.1.1.1","ports":[...]}, ...]
+    QString jsonStr = line;
+    if (jsonStr.startsWith(',')) {
+        jsonStr = jsonStr.mid(1).trimmed();
+    }
+    if (jsonStr.startsWith('{') && jsonStr.contains("\"ip\"")) {
         QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8(), &err);
+        QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &err);
         if (!doc.isNull() && doc.isObject()) {
             QJsonObject root = doc.object();
             QString ip = root.value("ip").toString();
-            QJsonArray portsArr = root.value("ports").toArray();
             QString timeStr = QDateTime::currentDateTime().toString("hh:mm:ss");
-            for (const auto& pVal : portsArr) {
-                if (pVal.isObject()) {
-                    QJsonObject pObj = pVal.toObject();
-                    int port = pObj.value("port").toInt();
-                    QString proto = pObj.value("proto").toString().toUpper();
-                    QString status = pObj.value("status").toString("open");
-                    QString svc = lookupServiceName(port, proto);
-                    if (pObj.contains("service") && pObj.value("service").isObject()) {
-                        QJsonObject sObj = pObj.value("service").toObject();
-                        if (sObj.contains("banner") && !sObj.value("banner").toString().isEmpty()) {
-                            svc = sObj.value("banner").toString();
-                        } else if (sObj.contains("name") && !sObj.value("name").toString().isEmpty()) {
-                            svc = sObj.value("name").toString();
-                        }
-                    } else if (pObj.contains("data") && pObj.value("data").isObject()) {
-                        QJsonObject dObj = pObj.value("data").toObject();
-                        if (dObj.contains("banner") && !dObj.value("banner").toString().isEmpty()) {
-                            svc = dObj.value("banner").toString();
-                        }
+
+            // Format A: Single-port NDJSON (-oD) where "port" is a direct member of root
+            if (root.contains("port")) {
+                int port = root.value("port").toInt();
+                QString proto = root.value("proto").toString("tcp").toUpper();
+                QString status = "open";
+                QString svc = lookupServiceName(port, proto);
+
+                if (root.contains("data") && root.value("data").isObject()) {
+                    QJsonObject dObj = root.value("data").toObject();
+                    if (dObj.contains("status")) {
+                        status = dObj.value("status").toString("open");
                     }
-                    m_found++;
-                    emit portDiscovered(ip, port, proto, status, svc, timeStr);
+                    if (dObj.contains("banner") && !dObj.value("banner").toString().isEmpty()) {
+                        svc = dObj.value("banner").toString();
+                    } else if (dObj.contains("service") && !dObj.value("service").toString().isEmpty()) {
+                        svc = dObj.value("service").toString();
+                    }
                 }
+
+                bool isBanner = (root.value("rec_type").toString() == "banner");
+                if (!isBanner) {
+                    m_found++;
+                }
+                emit portDiscovered(ip, port, proto, status, svc, timeStr);
+                emit progressUpdated(m_pct, m_kpps, "", m_found);
+                return;
             }
-            emit progressUpdated(m_pct, m_kpps, "", m_found);
-            return;
+
+            // Format B: Multi-port JSON (-oJ) where "ports" is an array
+            if (root.contains("ports") && root.value("ports").isArray()) {
+                QJsonArray portsArr = root.value("ports").toArray();
+                for (const auto& pVal : portsArr) {
+                    if (pVal.isObject()) {
+                        QJsonObject pObj = pVal.toObject();
+                        int port = pObj.value("port").toInt();
+                        QString proto = pObj.value("proto").toString().toUpper();
+                        QString status = pObj.value("status").toString("open");
+                        QString svc = lookupServiceName(port, proto);
+                        if (pObj.contains("service") && pObj.value("service").isObject()) {
+                            QJsonObject sObj = pObj.value("service").toObject();
+                            if (sObj.contains("banner") && !sObj.value("banner").toString().isEmpty()) {
+                                svc = sObj.value("banner").toString();
+                            } else if (sObj.contains("name") && !sObj.value("name").toString().isEmpty()) {
+                                svc = sObj.value("name").toString();
+                            }
+                        } else if (pObj.contains("data") && pObj.value("data").isObject()) {
+                            QJsonObject dObj = pObj.value("data").toObject();
+                            if (dObj.contains("banner") && !dObj.value("banner").toString().isEmpty()) {
+                                svc = dObj.value("banner").toString();
+                            }
+                        }
+                        m_found++;
+                        emit portDiscovered(ip, port, proto, status, svc, timeStr);
+                    }
+                }
+                emit progressUpdated(m_pct, m_kpps, "", m_found);
+                return;
+            }
         }
     }
 
@@ -358,6 +407,14 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
         m_stderrBuf.clear();
     }
 
+    if (m_userStopped) {
+        m_userStopped = false;
+        m_canResume = true;
+        setState(State::Paused, "Scan stopped by user");
+        emit scanFinished(exitCode, true);
+        return;
+    }
+
     if (m_state == State::Scanning) {
         if (exitCode == 0) {
             m_pct = 100.0f;
@@ -372,6 +429,9 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
 }
 
 void ScannerProcess::handleProcessError(QProcess::ProcessError error) {
+    if (m_userStopped) {
+        return; // Normal user-requested stop; ignore artificial crash signal
+    }
     QString errStr = m_process->errorString();
     setState(State::Error, "Process error: " + errStr);
     emit scanError(errStr);

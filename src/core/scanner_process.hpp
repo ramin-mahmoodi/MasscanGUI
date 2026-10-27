@@ -61,6 +61,7 @@ private:
     State m_state{State::Idle};
     bool m_simulate{false};
     bool m_canResume{false};
+    bool m_userStopped{false};
 
     QByteArray m_stdoutBuf;
     QByteArray m_stderrBuf;
