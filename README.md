@@ -1,64 +1,47 @@
 # MasscanGUI
 
-A high-performance, modern C++20 / Qt 6 graphical user interface for [masscan](https://github.com/robertdavidgraham/masscan), the world's fastest Internet-scale port scanner.
+A modern, native C++ / Qt 6 graphical interface for [masscan](https://github.com/robertdavidgraham/masscan), the Internet-scale port scanner.
 
-Designed with Microsoft Fluent design principles, animated transitions, light/dark themes, and real-time packet parsing.
+Configure scans, follow progress live, and browse results in a clean desktop app—without touching the command line.
 
----
+## Features
 
-## ✨ Features
+- **Simple scan setup** – Enter targets and ports in a structured form instead of writing complex `masscan` flags by hand, with a live CLI command preview.
+- **Country targeting** – Pick entire countries from the built-in offline GeoIP database (`data/geo.bin`) and scan their CIDR ranges in one click.
+- **Live progress & controls** – Real-time scan rate (kpps), completion percentage, ETA, and open port counter, with full **Start, Pause, Resume (`paused.conf`), and Stop** support.
+- **Readable results** – Open ports stream into a sortable table with automatic service detection (HTTP, HTTPS, SSH, FTP, DNS, MySQL, RDP, Redis, PostgreSQL, MongoDB, and more).
+- **Multiple output formats** – Supports standard output, list (`-oL`), NDJSON (`-oD`), and JSON (`-oJ`), plus quick result export and clipboard copy.
+- **Handles large scans** – Duplicate SYN-ACK responses are filtered out and the results table is capped, keeping the UI responsive during high-rate scans.
+- **Automatic masscan setup** – If `masscan.exe` is not found next to the app, MasscanGUI asks for your consent and automatically downloads the latest Windows binary from [ramin-mahmoodi/Masscan](https://github.com/ramin-mahmoodi/Masscan/releases).
+- **Dependency status** – Interactive header badges show whether `masscan` and `Npcap`/`WinPcap` are installed and ready.
+- **Light & dark themes** – Switch seamlessly with a smooth animated transition.
+- **Adaptive window layout** – Two-column workspace on wide screens, collapsing into a compact slide-over drawer on smaller windows.
+- **Standalone single executable** – Distributed as a statically linked `MasscanGUI.exe` with zero external DLL dependencies.
 
-- **Blazing Fast & Low Overhead**: Native C++20 implementation built on Qt 6 with zero garbage collection overhead.
-- **Adaptive Responsive Layout**: Fluid 2-column interface on widescreen displays with smooth overlay drawer on compact screens (<880px).
-- **Interactive Morphing Theme Switch**: Custom circular clip shader animation transitioning seamlessly between dark and light themes at 120/144Hz.
-- **Country IP Target Selector**: Integrated offline GeoIP database (`geo.bin`) allowing single-click targeting of entire countries and CIDR ranges.
-- **Live Output Tailer & Multi-Format Parsing**:
-  - Live status tracking (kpps rate, % completed, ETA, found count) streaming on carriage return (`\r`) chunks.
-  - Native support for standard stdout, list format (`-oL`), NDJSON (`-oD`), and JSON (`-oJ`).
-  - Automatic port-to-service mapping (HTTP, HTTPS, SSH, FTP, DNS, MySQL, RDP, Redis, Postgres, MongoDB, etc.).
-- **Memory & UI Protection**:
-  - Duplicate SYN-ACK packet elimination.
-  - Automatic GUI table row capping to prevent thread freezing on internet-scale scans.
-- **Automatic Binary Downloader**: If `masscan.exe` is not detected next to the app, MasscanGUI prompts for user consent and downloads the latest official Windows binary directly from [ramin-mahmoodi/Masscan](https://github.com/ramin-mahmoodi/Masscan/releases).
-- **Dependency Health Indicators**: Real-time header badges detecting presence and status of both `masscan` and `Npcap`/`WinPcap`.
+## Quick Start
 
----
+1. Install [Npcap](https://npcap.com/) (enable **"Install Npcap in WinPcap API-compatible Mode"** during setup).
+2. Download the latest archive from [Releases](https://github.com/ramin-mahmoodi/MasscanGUI/releases/latest) and extract `MasscanGUI.exe` alongside the `data/` folder.
+3. Launch `MasscanGUI.exe` (place `masscan.exe` beside it, or accept the automatic download prompt).
+4. Enter target IPs/CIDRs and ports—or select countries from the GeoIP picker—and click **Start Scan**.
 
-## 🛠 Prerequisites
+> **Note:** Only scan networks you own or have explicit permission to test.
 
-- **Compiler**: Modern C++20 compiler (MSVC 2022 v17+, GCC 11+, or Clang 13+)
-- **Build System**: CMake 3.21 or higher
-- **Framework**: Qt 6.5+ (Qt 6.8+ recommended) with modules:
-  - `Qt6::Core`
-  - `Qt6::Gui`
-  - `Qt6::Widgets`
-  - `Qt6::Network`
-  - `Qt6::Svg`
-- **Driver (Windows)**: [Npcap](https://npcap.com/) for raw packet transmission.
+## Building from Source
 
----
+**Requirements:**
+- C++20 compiler (MSVC 2022, MinGW-w64 GCC 11+, or Clang 13+)
+- CMake 3.21+
+- Qt 6.5+ (`Core`, `Gui`, `Widgets`, `Network`, `Svg`)
 
-## 🚀 Building from Source
-
-### Windows (MSVC & CMake)
-
-```powershell
-# 1. Clone repository
+```bash
 git clone https://github.com/ramin-mahmoodi/MasscanGUI.git
 cd MasscanGUI
-
-# 2. Configure build with Qt 6
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-
-# 3. Build executable
 cmake --build build --config Release
 ```
 
-The compiled binary will be placed at `build/Release/MasscanGUI.exe`.
+## License
 
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
-Masscan is developed by Robert David Graham.
+Released under the [GNU Affero General Public License v3.0](LICENSE).  
+`masscan` is developed by [Robert David Graham](https://github.com/robertdavidgraham/masscan).
