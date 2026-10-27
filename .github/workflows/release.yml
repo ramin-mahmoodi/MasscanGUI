@@ -27,10 +27,10 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
-          modules: 'qtsvg'
+          modules: 'qtimageformats'
 
       - name: Configure CMake
-        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT }}"
 
       - name: Build MasscanGUI
         run: cmake --build build --config Release
@@ -38,7 +38,7 @@ jobs:
       - name: Deploy Qt dependencies
         shell: pwsh
         run: |
-          windeployqt.exe --release --no-translations --compiler-runtime build/Release/MasscanGUI.exe
+          & "${env:QT_ROOT}/bin/windeployqt.exe" --release --no-translations --compiler-runtime build/Release/MasscanGUI.exe
           if (Test-Path "data") {
             Copy-Item -Recurse "data" "build/Release/data" -Force
           }
