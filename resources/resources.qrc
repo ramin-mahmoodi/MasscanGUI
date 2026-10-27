@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Icon.svg</file>
+        <file>Icon.ico</file>
+        <file>check.svg</file>
+        <file>chev_down.svg</file>
+        <file>chev_down_light.svg</file>
+        <file alias="data/geo.bin">../data/geo.bin</file>
+    </qresource>
+</RCC>
