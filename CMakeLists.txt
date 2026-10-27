@@ -47,8 +47,23 @@ add_executable(MasscanGUI WIN32
 target_include_directories(MasscanGUI PRIVATE src)
 target_link_libraries(MasscanGUI PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Svg)
 target_compile_definitions(MasscanGUI PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+# In static Qt builds, link ONLY the 100% vital plugins and exclude all unnecessary plugins
+qt_import_plugins(MasscanGUI
+    NO_DEFAULT
+    INCLUDE
+        Qt6::QWindowsIntegrationPlugin
+        Qt6::QSvgIconPlugin
+        Qt6::QICOPlugin
+        Qt6::QSvgPlugin
+        Qt6::QSchannelBackendPlugin
+)
+
 if (MSVC)
     target_link_options(MasscanGUI PRIVATE "/ENTRY:mainCRTStartup")
+elseif (MINGW)
+    target_compile_options(MasscanGUI PRIVATE -Os -ffunction-sections -fdata-sections)
+    target_link_options(MasscanGUI PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--gc-sections -s)
 endif()
 
 if (WIN32)

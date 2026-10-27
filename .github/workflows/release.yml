@@ -11,30 +11,27 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows Release
+    name: Build Windows Static Release
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Qt 6
-        uses: jurplel/install-qt-action@v4
+      - name: Install Static Qt 6 (MinGW UCRT)
+        uses: orestonce/install-qt-static@v0.4.3
         with:
-          version: '6.8.0'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
+          version: 'Qt6.5.3-Windows-x86_64-MinGW13.2.0-ucrt-staticFull-20240527'
 
       - name: Configure CMake
-        run: cmake -B build -S .
+        run: |
+          cmake -B build -G "MinGW Makefiles" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/qt_static_install/qt_install"
 
       - name: Build MasscanGUI
         run: cmake --build build --config Release
 
-      - name: Bundle Only Vital DLLs into Single MasscanGUI.exe
+      - name: Strip Symbols and Package Release Archive
         shell: pwsh
         run: |
           $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
@@ -43,136 +40,37 @@ jobs:
             exit 1
           }
           $exe = $exeItem.FullName
-          $outDir = Split-Path -Parent $exe
-          Write-Output "Deploying vital dependencies to: $outDir for binary: $exe"
+          Write-Output "Found built binary at: $exe"
 
-          # 1. Locate windeployqt
-          $windeployCmd = Get-Command "windeployqt.exe" -ErrorAction SilentlyContinue
-          if (-not $windeployCmd) {
-            Write-Error "windeployqt.exe not found in PATH!"
-            exit 1
-          }
-          $windeploy = $windeployCmd.Source
-
-          # 2. Run windeployqt without software opengl
-          & $windeploy --release --no-translations --no-opengl-sw --no-compiler-runtime --dir "$outDir" "$exe"
-
-          # 3. Copy only essential MSVC CRT runtime libraries
-          $crt = Get-ChildItem -Path "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($crt) {
-            $vitalCrt = @(
-              "vcruntime140.dll",
-              "vcruntime140_1.dll",
-              "msvcp140.dll",
-              "msvcp140_1.dll",
-              "msvcp140_2.dll",
-              "msvcp140_atomic_wait.dll"
-            )
-            foreach ($dll in $vitalCrt) {
-              $srcFile = Join-Path $crt.FullName $dll
-              if (Test-Path $srcFile) {
-                Copy-Item $srcFile -Destination "$outDir" -Force
-              }
-            }
+          # Strip any remaining debug/symbol tables using MinGW strip
+          $stripCmd = Get-Command "strip.exe" -ErrorAction SilentlyContinue
+          if ($stripCmd) {
+            & $stripCmd.Source --strip-all $exe
           }
 
-          # 4. Strip all heavy/unnecessary files and folders BEFORE packing into .exe
-          $unneeded = @(
-            "opengl32sw.dll",
-            "dxcompiler.dll",
-            "dxil.dll",
-            "d3dcompiler_47.dll",
-            "concrt140.dll",
-            "vccorlib140.dll",
-            "msvcp140_codecvt_ids.dll",
-            "generic",
-            "styles",
-            "networkinformation",
-            "tls/qcertonlybackend.dll"
-          )
-          foreach ($item in $unneeded) {
-            $p = Join-Path $outDir $item
-            if (Test-Path $p) {
-              Remove-Item -Recurse -Force $p
-              Write-Output "Removed non-essential: $item"
-            }
-          }
-
-          # 5. In imageformats, keep ONLY qico.dll and qsvg.dll
-          $imgDir = Join-Path $outDir "imageformats"
-          if (Test-Path $imgDir) {
-            Get-ChildItem -Path $imgDir -Exclude "qico.dll","qsvg.dll" | Remove-Item -Force
-          }
-
-          # 6. Install Enigma Virtual Box to pack only vital DLLs into MasscanGUI.exe
-          Write-Output "Downloading Enigma Virtual Box..."
-          Invoke-WebRequest -Uri "https://www.enigmaprotector.com/assets/files/enigmavb.exe" -OutFile "enigmavb_setup.exe"
-          Start-Process -FilePath "enigmavb_setup.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
-          Remove-Item -Force "enigmavb_setup.exe"
-
-          $evbConsoleItem = Get-ChildItem -Path "C:\Program Files*" -Recurse -Filter "enigmavbconsole.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $evbConsoleItem) {
-            Write-Error "enigmavbconsole.exe not found after installation!"
-            exit 1
-          }
-          $evbConsole = $evbConsoleItem.FullName
-          Write-Output "Using Enigma Virtual Box Console: $evbConsole"
-
-          # 7. Generate EVB XML project with ONLY the vital DLLs (excluding MasscanGUI.exe and data/)
           $distDir = New-Item -ItemType Directory -Path "dist_package" -Force
-          $packedExe = Join-Path $distDir.FullName "MasscanGUI.exe"
-          $evbFile = Join-Path $env:RUNNER_TEMP "project.evb"
+          Copy-Item $exe -Destination $distDir.FullName -Force
 
-          function Build-EvbTreeXml($dirPath) {
-            $sb = New-Object System.Text.StringBuilder
-            $items = Get-ChildItem -Path $dirPath
-            foreach ($item in $items) {
-              if ($item.Name -eq "MasscanGUI.exe" -or $item.Name -eq "data") { continue }
-              if ($item.PSIsContainer) {
-                $inner = Build-EvbTreeXml $item.FullName
-                [void]$sb.Append("<File><Type>3</Type><Name>$($item.Name)</Name><Action>0</Action><OverwriteDateTime>false</OverwriteDateTime><OverwriteAttributes>false</OverwriteAttributes><Files>$inner</Files></File>")
-              } else {
-                [void]$sb.Append("<File><Type>2</Type><Name>$($item.Name)</Name><File>$($item.FullName)</File><ActiveX>false</ActiveX><ActiveXInstall>false</ActiveXInstall><Action>0</Action><OverwriteDateTime>false</OverwriteDateTime><OverwriteAttributes>false</OverwriteAttributes><PassCommandLine>false</PassCommandLine></File>")
-              }
-            }
-            return $sb.ToString()
-          }
-
-          $filesXml = Build-EvbTreeXml $outDir
-          $evbXml = '<?xml encoding="utf-16"?><><InputFile>' + $exe + '</InputFile><OutputFile>' + $packedExe + '</OutputFile><Files><Enabled>true</Enabled><DeleteExtractedOnExit>true</DeleteExtractedOnExit><CompressFiles>true</CompressFiles><Files><File><Type>3</Type><Name>%DEFAULT FOLDER%</Name><Action>0</Action><OverwriteDateTime>false</OverwriteDateTime><OverwriteAttributes>false</OverwriteAttributes><Files>' + $filesXml + '</Files></File></Files></Files><Registries><Enabled>false</Enabled><Registries><Registry><Type>1</Type><Virtual>true</Virtual><Name>Classes</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>User</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>Machine</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>Users</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>Config</Name><ValueType>0</ValueType><Value/><Registries/></Registry></Registries></Registries><Packaging><Enabled>false</Enabled></Packaging><Options><ShareVirtualSystem>false</ShareVirtualSystem><MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile><AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles></Options></>'
-
-          [System.IO.File]::WriteAllText($evbFile, $evbXml, [System.Text.Encoding]::Unicode)
-          & $evbConsole $evbFile
-          if (-not (Test-Path $packedExe)) {
-            Write-Error "Failed to create packed MasscanGUI.exe!"
-            exit 1
-          }
-
-          # 8. Copy data folder next to single-file MasscanGUI.exe
+          # Copy data folder alongside MasscanGUI.exe
           if (Test-Path "data") {
             Copy-Item -Recurse -Force "data" $distDir.FullName
           }
 
-          # 9. Verify final package contents
-          $finalFiles = Get-ChildItem -Path $distDir.FullName -Recurse -File
-          Write-Output "Total files in final package: $($finalFiles.Count)"
-          foreach ($f in $finalFiles) {
-            Write-Output "  $($f.FullName.Replace($distDir.FullName, '')) ($([math]::Round($f.Length / 1MB, 2)) MB)"
-          }
-
+          # Verify static build: No DLL files should exist in the package
           $dlls = Get-ChildItem -Path $distDir.FullName -Recurse -Filter "*.dll"
+          Write-Output "DLLs in package: $($dlls.Count)"
           if ($dlls.Count -gt 0) {
-            Write-Error "Verification failed: External DLLs found in dist_package!"
+            Write-Error "Verification failed: DLLs found in static release package!"
             exit 1
           }
 
-      - name: Package Release Archive
-        shell: pwsh
-        run: |
+          $exeSize = (Get-Item (Join-Path $distDir.FullName "MasscanGUI.exe")).Length
+          Write-Output "MasscanGUI.exe size: $([math]::Round($exeSize / 1MB, 2)) MB ($exeSize bytes)"
+
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v1.0.0" }
           $zipName = "MasscanGUI-$tag-windows-x64.zip"
-          Write-Output "Archiving from dist_package to $zipName"
-          Compress-Archive -Path "dist_package/*" -DestinationPath $zipName -Force
+          Write-Output "Archiving from $($distDir.FullName) to $zipName"
+          Compress-Archive -Path "$($distDir.FullName)/*" -DestinationPath $zipName -Force
           $size = (Get-Item $zipName).Length
           Write-Output "Release archive created: $zipName ($([math]::Round($size / 1MB, 2)) MB)"
 
