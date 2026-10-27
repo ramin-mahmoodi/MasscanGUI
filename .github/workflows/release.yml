@@ -11,30 +11,27 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows Release
+    name: Build Windows Static Release
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Qt 6
-        uses: jurplel/install-qt-action@v4
+      - name: Install Static Qt 6 (MinGW UCRT)
+        uses: orestonce/install-qt-static@v0.4.3
         with:
-          version: '6.8.0'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
+          version: 'Qt6.5.3-Windows-x86_64-MinGW13.2.0-ucrt-staticFull-20240527'
 
       - name: Configure CMake
-        run: cmake -B build -S .
+        run: |
+          cmake -B build -G "MinGW Makefiles" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/qt_static_install/qt_install"
 
       - name: Build MasscanGUI
         run: cmake --build build --config Release
 
-      - name: Deploy Qt and MSVC Runtime Dependencies
+      - name: Package Release Archive
         shell: pwsh
         run: |
           $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
@@ -43,78 +40,33 @@ jobs:
             exit 1
           }
           $exe = $exeItem.FullName
-          $outDir = Split-Path -Parent $exe
-          Write-Output "Deploying dependencies to: $outDir for binary: $exe"
+          Write-Output "Found built binary at: $exe"
 
-          # 1. Locate windeployqt
-          $windeployCmd = Get-Command "windeployqt.exe" -ErrorAction SilentlyContinue
-          if (-not $windeployCmd) {
-            Write-Error "windeployqt.exe not found in PATH!"
-            exit 1
-          }
-          $windeploy = $windeployCmd.Source
-          Write-Output "Found windeployqt at: $windeploy"
+          $distDir = New-Item -ItemType Directory -Path "dist_package" -Force
+          Copy-Item $exe -Destination $distDir.FullName -Force
 
-          # 2. Run windeployqt without software opengl
-          & $windeploy --release --no-translations --no-opengl-sw --no-compiler-runtime --dir "$outDir" "$exe"
-
-          # 3. Copy MSVC CRT redistributable libraries so app runs on clean Windows machines
-          $crt = Get-ChildItem -Path "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($crt) {
-            Write-Output "Bundling MSVC CRT from: $($crt.FullName)"
-            Copy-Item "$($crt.FullName)\*.dll" -Destination "$outDir" -Force
-          }
-
-          # 4. Remove heavy optional fallback graphics libraries (saves ~40MB uncompressed / ~18MB in zip)
-          $heavyDlls = @("opengl32sw.dll", "dxcompiler.dll", "dxil.dll", "d3dcompiler_47.dll")
-          foreach ($f in $heavyDlls) {
-            $p = Join-Path $outDir $f
-            if (Test-Path $p) {
-              Remove-Item -Force $p
-              Write-Output "Trimmed heavy optional library: $f"
-            }
-          }
-
-          # Clean up unused imageformats plugins (only keep SVG and ICO)
-          $imgDir = Join-Path $outDir "imageformats"
-          if (Test-Path $imgDir) {
-            Get-ChildItem -Path $imgDir -Exclude "qico.dll","qsvg.dll" | Remove-Item -Force
-          }
-
-          # 5. Copy data directory cleanly
+          # Copy data folder alongside MasscanGUI.exe
           if (Test-Path "data") {
-            Copy-Item -Recurse -Force "data" "$outDir"
+            Copy-Item -Recurse -Force "data" $distDir.FullName
           }
 
-          # 6. Verify deployment completeness
-          $dlls = Get-ChildItem -Path "$outDir" -Filter "*.dll"
-          Write-Output "Deployed DLLs in root: $($dlls.Count)"
-          foreach ($d in $dlls) {
-            Write-Output "  $($d.Name) ($($d.Length) bytes)"
-          }
-
-          if ($dlls.Count -lt 5) {
-            Write-Error "Verification failed: not enough DLLs deployed!"
+          # Verify static build: No DLL files should exist in the package
+          $dlls = Get-ChildItem -Path $distDir.FullName -Recurse -Filter "*.dll"
+          Write-Output "DLLs in package: $($dlls.Count)"
+          if ($dlls.Count -gt 0) {
+            Write-Error "Verification failed: DLLs found in static release package!"
             exit 1
           }
-          if (-not (Test-Path "$outDir/platforms/qwindows.dll")) {
-            Write-Error "Verification failed: platforms/qwindows.dll is missing!"
-            exit 1
-          }
-          Write-Output "Deployment verification passed!"
 
-      - name: Package Release Archive
-        shell: pwsh
-        run: |
-          $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
-          $outDir = Split-Path -Parent $exeItem.FullName
+          $exeSize = (Get-Item (Join-Path $distDir.FullName "MasscanGUI.exe")).Length
+          Write-Output "MasscanGUI.exe size: $([math]::Round($exeSize / 1MB, 2)) MB ($exeSize bytes)"
+
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v1.0.0" }
           $zipName = "MasscanGUI-$tag-windows-x64.zip"
-          Write-Output "Archiving from $outDir to $zipName"
-          Compress-Archive -Path "$outDir/*" -DestinationPath $zipName -Force
+          Write-Output "Archiving from $($distDir.FullName) to $zipName"
+          Compress-Archive -Path "$($distDir.FullName)/*" -DestinationPath $zipName -Force
           $size = (Get-Item $zipName).Length
           Write-Output "Release archive created: $zipName ($size bytes)"
-          Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
