@@ -4,6 +4,11 @@ A modern, native C++ / Qt 6 graphical interface for [masscan](https://github.com
 
 Configure scans, follow progress live, and browse results in a clean desktop app—without touching the command line.
 
+<p align="center">
+  <img src="docs/screenshots/dark.png" alt="MasscanGUI Dark Theme" width="49%">
+  <img src="docs/screenshots/light.png" alt="MasscanGUI Light Theme" width="49%">
+</p>
+
 ## Features
 
 - **Simple scan setup** – Enter targets and ports in a structured form instead of writing complex `masscan` flags by hand, with a live CLI command preview.
