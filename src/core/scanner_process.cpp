@@ -99,6 +99,16 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
         }
     }
 
+    if (!m_tailFilePath.isEmpty()) {
+        bool isAppend = args.contains("--append-output");
+        if (!isAppend && QFile::exists(m_tailFilePath)) {
+            QFile::remove(m_tailFilePath);
+            m_lastTailPos = 0;
+        } else if (isAppend && QFile::exists(m_tailFilePath)) {
+            m_lastTailPos = QFileInfo(m_tailFilePath).size();
+        }
+    }
+
     if (m_simulate) {
         setState(State::Scanning, "Simulating Scan...");
         emit logLineReceived(QString("[%1] Simulation scan started...").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
@@ -249,6 +259,21 @@ void ScannerProcess::parseOutputLine(const QString& line) {
         }
     }
 
+    // 2b. Detect banner in list format (-oL): "banner tcp 80 1.1.1.1 1793002162 [title] Apache"
+    if (line.startsWith("banner ", Qt::CaseInsensitive)) {
+        QStringList parts = line.split(QRegularExpression(R"(\s+)"), Qt::SkipEmptyParts);
+        if (parts.size() >= 5) {
+            QString proto = parts[1].toUpper();
+            int port = parts[2].toInt();
+            QString ip = parts[3];
+            QString banner = parts.mid(5).join(" ");
+            if (banner.isEmpty() && parts.size() > 4) banner = parts[4];
+            QString timeStr = QDateTime::currentDateTime().toString("hh:mm:ss");
+            emit portDiscovered(ip, port, proto, "open", banner, timeStr);
+            return;
+        }
+    }
+
     // 3. Detect NDJSON / JSON format (-oD / -oJ): {"ip": "1.1.1.1", ...}
     if (line.startsWith('{') && line.contains("\"ip\"")) {
         QJsonParseError err;
@@ -265,6 +290,19 @@ void ScannerProcess::parseOutputLine(const QString& line) {
                     QString proto = pObj.value("proto").toString().toUpper();
                     QString status = pObj.value("status").toString("open");
                     QString svc = lookupServiceName(port, proto);
+                    if (pObj.contains("service") && pObj.value("service").isObject()) {
+                        QJsonObject sObj = pObj.value("service").toObject();
+                        if (sObj.contains("banner") && !sObj.value("banner").toString().isEmpty()) {
+                            svc = sObj.value("banner").toString();
+                        } else if (sObj.contains("name") && !sObj.value("name").toString().isEmpty()) {
+                            svc = sObj.value("name").toString();
+                        }
+                    } else if (pObj.contains("data") && pObj.value("data").isObject()) {
+                        QJsonObject dObj = pObj.value("data").toObject();
+                        if (dObj.contains("banner") && !dObj.value("banner").toString().isEmpty()) {
+                            svc = dObj.value("banner").toString();
+                        }
+                    }
                     m_found++;
                     emit portDiscovered(ip, port, proto, status, svc, timeStr);
                 }
@@ -321,6 +359,10 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
     }
 
     if (m_state == State::Scanning) {
+        if (exitCode == 0) {
+            m_pct = 100.0f;
+            emit progressUpdated(100.0f, 0.0, "00:00:00", m_found);
+        }
         setState(State::Completed, exitCode == 0 ? "Scan complete" : "Scan finished with exit code " + QString::number(exitCode));
         emit logLineReceived(QString("[%1] Process finished with exit code %2")
                                  .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))

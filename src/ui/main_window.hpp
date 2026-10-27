@@ -16,6 +16,7 @@
 #include <QProgressBar>
 #include <QScrollArea>
 #include <QAction>
+#include <QNetworkAccessManager>
 #include <set>
 #include <unordered_set>
 #include <vector>
@@ -35,6 +36,7 @@ class CollapsibleSection;
 class FluentScrollBarOverlay;
 class TerminalCodeBox;
 class GitHubButton;
+class SlidingStackedWidget;
 
 struct TargetItem {
     QString text;
@@ -92,6 +94,10 @@ private:
     void createFooter();
     void checkDependencies();
     bool promptAndDownloadMasscan(bool silentCheck = false);
+    void startMasscanDownload();
+    void finalizeMasscanExtraction(bool success, const QString& targetExe, const QString& tmpZipPath);
+    void startNpcapDownload();
+    void downloadNpcapInstaller(const QString& filename);
     void applyResponsiveLayout(int winWidth);
     void layoutBodyWidgets();
     void setDrawerOpen(bool open, bool animate = true);
@@ -275,6 +281,7 @@ private:
     // Right Column - Tabs (Results / Log)
     QPushButton* m_pillResults{nullptr};
     QPushButton* m_pillLog{nullptr};
+    SlidingStackedWidget* m_tabStack{nullptr};
     QWidget* m_tabResultsWidget{nullptr};
     QWidget* m_tabLogWidget{nullptr};
     QLineEdit* m_filterResultsEdit{nullptr};
@@ -315,6 +322,10 @@ private:
     QString m_masscanInfo{"not found"};
     int m_npcapState{0};
     QString m_npcapInfo{"not found"};
+
+    bool m_isDownloadingMasscan{false};
+    bool m_isDownloadingNpcap{false};
+    QNetworkAccessManager* m_netManager{nullptr};
 };
 
 } // namespace masscan::ui

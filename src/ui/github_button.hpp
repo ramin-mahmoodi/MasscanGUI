@@ -241,7 +241,7 @@ protected:
         double starSize = 14.0;
         double textW = w - textX - starPad - starSize - ((m_mode == 1) ? 6.0 : 8.0);
 
-        QRectF textRect(textX, 0, textW, h);
+        QRectF textRect(textX, -1.5, textW, h);
         p.drawText(textRect, Qt::AlignCenter, labelText);
 
         // 3. Draw Star Icon (.star with 360deg rotation and active color transition)

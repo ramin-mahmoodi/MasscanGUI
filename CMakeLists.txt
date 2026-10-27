@@ -39,6 +39,7 @@ add_executable(MasscanGUI WIN32
     src/ui/glitch_button.hpp
     src/ui/github_button.hpp
     src/ui/terminal_box.hpp
+    src/ui/sliding_stacked_widget.hpp
     src/ui/icons.hpp
     resources/app.rc
     resources/resources.qrc

@@ -27,6 +27,7 @@ public:
     void stopScan();
     void resumeScan(const QString& program);
     void resetFoundCount() noexcept { m_found = 0; }
+    [[nodiscard]] int foundCount() const noexcept { return m_found; }
     static QString lookupServiceName(int port, const QString& proto);
 
     [[nodiscard]] bool isRunning() const { return m_state == State::Scanning; }

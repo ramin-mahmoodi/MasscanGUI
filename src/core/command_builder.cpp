@@ -241,31 +241,15 @@ BuiltCommand build_command(const Snapshot& c, const std::vector<std::string>& ma
         }
     };
 
-    auto quote = [](const std::string& s) -> std::string {
-        if (s.find(' ') == std::string::npos) return s;
-        std::string q = "\"";
-        for (char ch : s) {
-            if (ch == '"') q += "\\\"";
-            else q += ch;
-        }
-        q += "\"";
-        return q;
-    };
-
     // targets
     std::vector<std::string> effective_manual = manual;
     if (c.all_ipv4 && std::find(effective_manual.begin(), effective_manual.end(), "0.0.0.0/0") == effective_manual.end()) {
         effective_manual.insert(effective_manual.begin(), "0.0.0.0/0");
     }
-    if (c.all_ipv4 && c.exclude.empty() && c.excludefile.empty()) {
-        out.warnings.push_back({
-            WarnKind::Warn,
-            "Masscan requires at least one --exclude (e.g. 255.255.255.255) as confirmation when scanning 0.0.0.0/0."
-        });
-    }
 
-    if (!countries.empty()) {
-        std::string dir = c.outdir.empty() ? "." : c.outdir;
+    bool use_target_file = !countries.empty() || effective_manual.size() > 25;
+    if (use_target_file) {
+        std::string dir = c.outdir.empty() ? "MassGUI" : c.outdir;
         out.args.push_back("-iL");
         out.args.push_back(dir + "/targets.txt");
 
@@ -276,12 +260,25 @@ BuiltCommand build_command(const Snapshot& c, const std::vector<std::string>& ma
                 ips += cn->addresses;
             }
         }
-        std::string extra = effective_manual.empty() ? "" : " + " + std::to_string(effective_manual.size()) + " target(s)";
+        ranges += effective_manual.size();
+        for (const auto& m : effective_manual) {
+            if (auto sz = target_size(m)) ips += *sz;
+        }
+
+        std::string desc;
+        if (!countries.empty()) {
+            desc += std::to_string(countries.size()) + " countr" + (countries.size() == 1 ? "y" : "ies");
+            if (!effective_manual.empty()) {
+                desc += " + " + std::to_string(effective_manual.size()) + " target(s)";
+            }
+        } else {
+            desc += std::to_string(effective_manual.size()) + " targets";
+        }
+
         out.warnings.push_back({
             WarnKind::Info,
-            std::to_string(countries.size()) + " countr" + (countries.size() == 1 ? "y" : "ies") + extra +
-            ": " + thousands(ranges) + " ranges, " + geo::human_number(ips) + " IPs. The app writes them to " +
-            dir + "/targets.txt when you press Start."
+            desc + ": " + thousands(ranges) + " ranges, " + geo::human_number(ips) +
+            " IPs. The app writes them to " + dir + "/targets.txt when you press Start."
         });
     } else if (!effective_manual.empty()) {
         std::string combined;
@@ -294,8 +291,18 @@ BuiltCommand build_command(const Snapshot& c, const std::vector<std::string>& ma
         out.warnings.push_back({WarnKind::Err, "No target: add a country or an IP/range."});
     }
 
-    add("--exclude", c.exclude);
-    add("--excludefile", c.excludefile);
+    bool has_zero_net = (std::find(effective_manual.begin(), effective_manual.end(), "0.0.0.0/0") != effective_manual.end());
+    if (has_zero_net && c.exclude.empty() && c.excludefile.empty()) {
+        out.args.push_back("--exclude");
+        out.args.push_back("255.255.255.255");
+        out.warnings.push_back({
+            WarnKind::Info,
+            "Added '--exclude 255.255.255.255' required by masscan for 0.0.0.0/0 Internet scan confirmation."
+        });
+    } else {
+        add("--exclude", c.exclude);
+        add("--excludefile", c.excludefile);
+    }
 
     // ports
     add("-p", c.ports);
@@ -400,16 +407,16 @@ BuiltCommand build_command(const Snapshot& c, const std::vector<std::string>& ma
     for (const auto& [flag, val] : http_opts) {
         if (!val->empty()) {
             out.args.push_back(flag);
-            out.args.push_back(quote(*val));
+            out.args.push_back(*val);
         }
     }
     if (!c.ua.empty()) {
         out.args.push_back("--http-user-agent");
-        out.args.push_back(quote(c.ua));
+        out.args.push_back(c.ua);
     }
     if (!c.hello.empty()) {
         out.args.push_back("--hello-string");
-        out.args.push_back(quote(c.hello));
+        out.args.push_back(c.hello);
     }
     add("--connection-timeout", c.ctimeout);
     add("--nmap-payloads", c.nmappl);
@@ -468,7 +475,29 @@ BuiltCommand build_command(const Snapshot& c, const std::vector<std::string>& ma
     }
     if (c.mode == 1) out.args.push_back("-sL");
     if (c.mode == 2) out.args.push_back("--echo");
-    if (!c.extra.empty()) out.args.push_back(c.extra);
+    if (!c.extra.empty()) {
+        std::string current;
+        bool in_quote = false;
+        char quote_char = 0;
+        for (char ch : c.extra) {
+            if (!in_quote && (ch == '"' || ch == '\'')) {
+                in_quote = true;
+                quote_char = ch;
+            } else if (in_quote && ch == quote_char) {
+                in_quote = false;
+            } else if (!in_quote && std::isspace(static_cast<unsigned char>(ch))) {
+                if (!current.empty()) {
+                    out.args.push_back(current);
+                    current.clear();
+                }
+            } else {
+                current += ch;
+            }
+        }
+        if (!current.empty()) {
+            out.args.push_back(current);
+        }
+    }
 
     // Time estimate (masscan's own default rate is 100 pps)
     std::optional<double> rate_opt;

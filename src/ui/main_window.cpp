@@ -8,10 +8,12 @@
 #include "theme.hpp"
 #include "terminal_box.hpp"
 #include "github_button.hpp"
+#include "sliding_stacked_widget.hpp"
 #include "fluent_tooltip.hpp"
 #include "../core/geo.hpp"
 
 #include <iostream>
+#include <tuple>
 #include <QApplication>
 #include <QClipboard>
 #include <QFileDialog>
@@ -182,8 +184,12 @@ void MainWindow::createHeader() {
 
     // Badges
     m_masscanBadge = new BadgeWidget("masscan", m_headerWidget);
+    m_masscanBadge->setDownloadSupported(true);
     m_npcapBadge = new BadgeWidget("Npcap", m_headerWidget);
+    m_npcapBadge->setDownloadSupported(true);
+    connect(m_masscanBadge, &BadgeWidget::downloadRequested, this, &MainWindow::startMasscanDownload);
     connect(m_masscanBadge, &BadgeWidget::clicked, this, &MainWindow::onRecheckDependencies);
+    connect(m_npcapBadge, &BadgeWidget::downloadRequested, this, &MainWindow::startNpcapDownload);
     connect(m_npcapBadge, &BadgeWidget::clicked, this, &MainWindow::onRecheckDependencies);
 
     layout->addWidget(m_masscanBadge);
@@ -194,7 +200,7 @@ void MainWindow::createHeader() {
     m_githubBtn->setDark(m_isDarkTheme);
     connect(m_githubBtn, &QAbstractButton::clicked, this, [this]() {
         m_githubBtn->toggleStarred();
-        QDesktopServices::openUrl(QUrl("https://github.com/robertdavidgraham/masscan"));
+        QDesktopServices::openUrl(QUrl("https://github.com/ramin-mahmoodi/MasscanGUI"));
     });
     layout->addWidget(m_githubBtn);
 
@@ -1011,7 +1017,7 @@ QWidget* MainWindow::createRightColumn() {
     rl->addWidget(divLine);
 
     // Tab 0: Results
-    m_tabResultsWidget = new QWidget(m_resultsCard);
+    m_tabResultsWidget = new QWidget();
     auto* rwl = new QVBoxLayout(m_tabResultsWidget);
     rwl->setContentsMargins(10, 10, 10, 10);
     rwl->setSpacing(8);
@@ -1069,10 +1075,8 @@ QWidget* MainWindow::createRightColumn() {
     m_tableScrollOverlay->setDark(m_isDarkTheme);
     rwl->addWidget(m_resultsTable);
 
-    rl->addWidget(m_tabResultsWidget, 1);
-
     // Tab 1: Log
-    m_tabLogWidget = new QWidget(m_resultsCard);
+    m_tabLogWidget = new QWidget();
     auto* lwl = new QVBoxLayout(m_tabLogWidget);
     lwl->setContentsMargins(8, 8, 8, 8);
     lwl->setSpacing(6);
@@ -1084,8 +1088,12 @@ QWidget* MainWindow::createRightColumn() {
     m_logScrollOverlay->setDark(m_isDarkTheme);
     lwl->addWidget(m_logEdit);
 
-    m_tabLogWidget->setVisible(false);
-    rl->addWidget(m_tabLogWidget, 1);
+    // Animated Tab Stack
+    m_tabStack = new SlidingStackedWidget(m_resultsCard);
+    m_tabStack->setDark(m_isDarkTheme);
+    m_tabStack->addWidget(m_tabResultsWidget);
+    m_tabStack->addWidget(m_tabLogWidget);
+    rl->addWidget(m_tabStack, 1);
 
     connect(m_pillResults, &QPushButton::clicked, this, [this]() { onTabSwitched(0); });
     connect(m_pillLog, &QPushButton::clicked, this, [this]() { onTabSwitched(1); });
@@ -1096,19 +1104,21 @@ QWidget* MainWindow::createRightColumn() {
 }
 
 void MainWindow::onTabSwitched(int tabIndex) {
+    if (m_currentTab == tabIndex) return;
     m_currentTab = tabIndex;
+
+    if (m_tabStack) {
+        m_tabStack->slideTo(tabIndex);
+    }
+
     QColor accentCol = m_isDarkTheme ? QColor("#3b9eff") : QColor("#1f73d6");
     QColor mutedCol  = m_isDarkTheme ? QColor("#8b97a8") : QColor("#5b6a7e");
     if (tabIndex == 0) {
-        m_tabResultsWidget->setVisible(true);
-        m_tabLogWidget->setVisible(false);
         m_pillResults->setProperty("class", "pillActive");
         m_pillLog->setProperty("class", "pillInactive");
         m_pillResults->setIcon(Icons::get(Icons::List, accentCol, 14));
         m_pillLog->setIcon(Icons::get(Icons::Terminal, mutedCol, 14));
     } else {
-        m_tabResultsWidget->setVisible(false);
-        m_tabLogWidget->setVisible(true);
         m_pillResults->setProperty("class", "pillInactive");
         m_pillLog->setProperty("class", "pillActive");
         m_pillResults->setIcon(Icons::get(Icons::List, mutedCol, 14));
@@ -1485,7 +1495,12 @@ void MainWindow::updateCommandAndValidation() {
     QString fullCmd;
     for (size_t i = 0; i < m_currentBuilt.args.size(); ++i) {
         if (i > 0) fullCmd += " ";
-        fullCmd += QString::fromStdString(m_currentBuilt.args[i]);
+        QString arg = QString::fromStdString(m_currentBuilt.args[i]);
+        if (arg.contains(' ') || arg.contains('\t')) {
+            fullCmd += "\"" + QString(arg).replace("\"", "\\\"") + "\"";
+        } else {
+            fullCmd += arg;
+        }
     }
     if (m_terminalBox) {
         m_terminalBox->setCommand(fullCmd);
@@ -1610,12 +1625,17 @@ void MainWindow::onStartScan() {
     }
 
     if (m_allIpv4Check && m_allIpv4Check->isChecked()) {
-        manualTargets.insert(manualTargets.begin(), "0.0.0.0/0");
+        if (std::find(manualTargets.begin(), manualTargets.end(), "0.0.0.0/0") == manualTargets.end()) {
+            manualTargets.insert(manualTargets.begin(), "0.0.0.0/0");
+        }
     }
 
-    if (!countryCodes.empty()) {
-        QString dir = m_outdirEdit->text().trimmed();
-        if (dir.isEmpty()) dir = "MassGUI";
+    QString dir = m_outdirEdit->text().trimmed();
+    if (dir.isEmpty()) dir = "MassGUI";
+    QDir().mkpath(dir);
+
+    bool useTargetFile = !countryCodes.empty() || manualTargets.size() > 25;
+    if (useTargetFile) {
         size_t lines = 0;
         uint64_t addrs = 0;
         write_targets_file((dir + "/targets.txt").toStdString(), manualTargets, countryCodes, lines, addrs);
@@ -1636,13 +1656,31 @@ void MainWindow::onStartScan() {
     }
 
     bool realBinaryExists = QFileInfo::exists(actualProgram) && QFileInfo(actualProgram).isFile();
-    if (!realBinaryExists && promptAndDownloadMasscan(false)) {
-        actualProgram = QCoreApplication::applicationDirPath() + "/masscan.exe";
-        realBinaryExists = QFileInfo::exists(actualProgram) && QFileInfo(actualProgram).isFile();
+    if (!realBinaryExists) {
+        if (m_isDownloadingMasscan) {
+            handleLogLine(QString("[%1] Masscan is currently downloading. Please wait for installation to finish.")
+                              .arg(QTime::currentTime().toString("HH:mm:ss")));
+        } else {
+            handleLogLine(QString("[%1] masscan.exe not found. Starting automatic download...")
+                              .arg(QTime::currentTime().toString("HH:mm:ss")));
+            startMasscanDownload();
+        }
+        return;
     }
-    bool simulate = !realBinaryExists;
 
-    if (m_scanner->startScan(actualProgram, args, simulate)) {
+#ifdef _WIN32
+    if (m_npcapState == 0) {
+        handleLogLine(QString("[%1] Warning: Npcap is not detected. Masscan requires Npcap on Windows to transmit packets.")
+                          .arg(QTime::currentTime().toString("HH:mm:ss")));
+        if (!m_isDownloadingNpcap) {
+            handleLogLine(QString("[%1] Please install Npcap by clicking the 'Npcap' badge in the header.")
+                              .arg(QTime::currentTime().toString("HH:mm:ss")));
+        }
+        return;
+    }
+#endif
+
+    if (m_scanner->startScan(actualProgram, args, false)) {
         m_btnStart->setEnabled(false);
         m_btnStop->setEnabled(true);
         m_btnResume->setEnabled(false);
@@ -1831,6 +1869,9 @@ void MainWindow::updateThemeDependentAssets() {
     if (m_logScrollOverlay) {
         m_logScrollOverlay->setDark(m_isDarkTheme);
     }
+    if (m_tabStack) {
+        m_tabStack->setDark(m_isDarkTheme);
+    }
 
     m_masscanBadge->setStatus(m_masscanState, m_masscanInfo, m_isDarkTheme);
     m_npcapBadge->setStatus(m_npcapState, m_npcapInfo, m_isDarkTheme);
@@ -1901,153 +1942,331 @@ void MainWindow::onToggleSidebarMenu() {
 
 void MainWindow::onRecheckDependencies() {
     checkDependencies();
-    if (m_masscanState == 0) {
-        promptAndDownloadMasscan(false);
-    }
 }
 
 bool MainWindow::promptAndDownloadMasscan(bool silentCheck) {
+    Q_UNUSED(silentCheck);
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString targetExe = appDir + "/masscan.exe";
+    if (QFileInfo::exists(targetExe) && QFileInfo(targetExe).isFile()) {
+        return true;
+    }
+    startMasscanDownload();
+    return false;
+}
+
+void MainWindow::startMasscanDownload() {
+    if (m_isDownloadingMasscan) return;
+
     QString appDir = QCoreApplication::applicationDirPath();
     QString targetExe = appDir + "/masscan.exe";
 
     if (QFileInfo::exists(targetExe) && QFileInfo(targetExe).isFile()) {
-        return true;
-    }
-    if (QFileInfo::exists("masscan.exe") && QFileInfo("masscan.exe").isFile()) {
-        return true;
-    }
-    if (silentCheck) {
-        return false;
+        checkDependencies();
+        return;
     }
 
-    // 1. Ask permission
-    QMessageBox msgBox(this);
-    msgBox.setWindowTitle("Masscan Required");
-    msgBox.setText("The Masscan executable ('masscan.exe') was not found next to MasscanGUI.");
-    msgBox.setInformativeText("Would you like to automatically download the latest official release from GitHub?\n\nSource: https://github.com/ramin-mahmoodi/Masscan");
-    msgBox.setIcon(QMessageBox::Question);
-    auto* btnDownload = msgBox.addButton("Download Masscan", QMessageBox::AcceptRole);
-    auto* btnCancel = msgBox.addButton("Cancel", QMessageBox::RejectRole);
-    msgBox.setDefaultButton(btnDownload);
-    msgBox.exec();
+    m_isDownloadingMasscan = true;
+    m_masscanBadge->startDownloadAnimation();
 
-    if (msgBox.clickedButton() != btnDownload) {
-        handleLogLine(QString("[%1] Masscan download declined by user.").arg(QTime::currentTime().toString("HH:mm:ss")));
-        return false;
+    handleLogLine(QString("[%1] Downloading Masscan from GitHub releases...")
+                      .arg(QTime::currentTime().toString("HH:mm:ss")));
+
+    if (!m_netManager) {
+        m_netManager = new QNetworkAccessManager(this);
     }
 
-    // 2. Prepare download
     QUrl downloadUrl("https://github.com/ramin-mahmoodi/Masscan/releases/latest/download/masscan-windows-x86_64.zip");
-    QString tmpZipPath = QDir::tempPath() + "/masscan-windows-x86_64.zip";
-
-    QProgressDialog progress(this);
-    progress.setWindowTitle("Downloading Masscan");
-    progress.setLabelText("Connecting to GitHub releases...");
-    progress.setRange(0, 100);
-    progress.setValue(0);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.show();
-    QApplication::processEvents();
-
-    QNetworkAccessManager nam;
     QNetworkRequest request(downloadUrl);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setHeader(QNetworkRequest::UserAgentHeader, "MasscanGUI/1.0");
 
-    QNetworkReply* reply = nam.get(request);
-
-    QFile file(tmpZipPath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        progress.close();
-        QMessageBox::critical(this, "Download Error", "Could not create temporary file in:\n" + tmpZipPath);
-        return false;
-    }
-
-    bool userCancelled = false;
-    connect(&progress, &QProgressDialog::canceled, [&]() {
-        userCancelled = true;
-        reply->abort();
-    });
-
-    connect(reply, &QNetworkReply::downloadProgress, [&](qint64 bytesReceived, qint64 bytesTotal) {
-        if (bytesTotal > 0) {
-            int pct = static_cast<int>((bytesReceived * 100) / bytesTotal);
-            progress.setValue(pct);
-            progress.setLabelText(QString("Downloading masscan: %1% (%2 KB / %3 KB)")
-                                      .arg(pct)
-                                      .arg(bytesReceived / 1024)
-                                      .arg(bytesTotal / 1024));
-        } else {
-            progress.setLabelText(QString("Downloading masscan: %1 KB received").arg(bytesReceived / 1024));
-        }
-    });
-
-    connect(reply, &QNetworkReply::readyRead, [&]() {
-        file.write(reply->readAll());
-    });
-
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    file.flush();
-    file.close();
-
-    if (userCancelled) {
-        QFile::remove(tmpZipPath);
-        handleLogLine(QString("[%1] Download canceled by user.").arg(QTime::currentTime().toString("HH:mm:ss")));
-        return false;
-    }
-
-    if (reply->error() != QNetworkReply::NoError) {
-        QString errStr = reply->errorString();
-        reply->deleteLater();
-        QFile::remove(tmpZipPath);
-        progress.close();
-        QMessageBox::critical(this, "Download Failed", "Failed to download Masscan from GitHub:\n" + errStr);
-        return false;
-    }
-
-    reply->deleteLater();
-    progress.setLabelText("Extracting masscan.exe...");
-    progress.setValue(100);
-    QApplication::processEvents();
-
-    // 3. Extract masscan.exe
-    bool extracted = false;
-    int code = QProcess::execute("tar.exe", {"-xf", tmpZipPath, "-C", appDir});
-    if (code == 0 && QFileInfo::exists(targetExe)) {
-        extracted = true;
-    }
-
-    if (!extracted) {
-        QString psCmd = QString("Expand-Archive -Path '%1' -DestinationPath '%2' -Force").arg(tmpZipPath, appDir);
-        QProcess::execute("powershell.exe", {"-NoProfile", "-Command", psCmd});
-        if (QFileInfo::exists(targetExe)) {
-            extracted = true;
-        }
-    }
-
+    QString tmpZipPath = QDir::tempPath() + "/masscan-windows-x86_64.zip";
     QFile::remove(tmpZipPath);
-    progress.close();
-
-    if (!extracted) {
-        QMessageBox::warning(this, "Extraction Failed", 
-            "Downloaded archive could not be extracted automatically.\n"
-            "Please extract masscan.exe manually to:\n" + targetExe);
-        return false;
+    auto file = std::make_shared<QFile>(tmpZipPath);
+    if (!file->open(QIODevice::WriteOnly)) {
+        m_isDownloadingMasscan = false;
+        m_masscanBadge->setDownloadFinished(false);
+        handleLogLine(QString("[%1] Error creating temporary file: %2")
+                          .arg(QTime::currentTime().toString("HH:mm:ss"), tmpZipPath));
+        return;
     }
 
-    // 4. Update dependencies and UI
-    checkDependencies();
-    updateCommandAndValidation();
+    QNetworkReply* reply = m_netManager->get(request);
 
-    handleLogLine(QString("[%1] Masscan successfully downloaded and installed to %2").arg(QTime::currentTime().toString("HH:mm:ss"), targetExe));
-    QMessageBox::information(this, "Installation Complete", 
-        "Masscan has been successfully downloaded and placed next to MasscanGUI!\n\nLocation: " + targetExe);
+    connect(reply, &QNetworkReply::downloadProgress, this, [this](qint64 bytesReceived, qint64 bytesTotal) {
+        if (bytesTotal > 0) {
+            double pct = static_cast<double>(bytesReceived) / static_cast<double>(bytesTotal);
+            m_masscanBadge->setDownloadProgress(pct);
+        } else if (bytesReceived > 0) {
+            m_masscanBadge->setDownloadStatus(QString("%1 KB").arg(bytesReceived / 1024));
+        }
+    });
 
-    return true;
+    connect(reply, &QNetworkReply::readyRead, this, [reply, file]() {
+        file->write(reply->readAll());
+    });
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, file, tmpZipPath, appDir, targetExe]() {
+        if (reply->bytesAvailable() > 0) {
+            file->write(reply->readAll());
+        }
+        file->flush();
+        file->close();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString errStr = reply->errorString();
+            reply->deleteLater();
+            QFile::remove(tmpZipPath);
+            m_isDownloadingMasscan = false;
+            m_masscanBadge->setDownloadFinished(false);
+            handleLogLine(QString("[%1] Masscan download failed: %2")
+                              .arg(QTime::currentTime().toString("HH:mm:ss"), errStr));
+            return;
+        }
+
+        reply->deleteLater();
+
+        m_masscanBadge->setDownloadStatus("Extracting...");
+        handleLogLine(QString("[%1] Extracting masscan.exe...").arg(QTime::currentTime().toString("HH:mm:ss")));
+
+        // Non-blocking asynchronous extraction
+        auto* proc = new QProcess(this);
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, proc, tmpZipPath, appDir, targetExe](int exitCode, QProcess::ExitStatus) {
+                proc->deleteLater();
+                bool extracted = (exitCode == 0 && QFileInfo::exists(targetExe));
+                if (!extracted) {
+                    QString escapedZip = QString(tmpZipPath).replace("'", "''");
+                    QString escapedDir = QString(appDir).replace("'", "''");
+                    QString psCmd = QString("Expand-Archive -LiteralPath '%1' -DestinationPath '%2' -Force")
+                                        .arg(escapedZip, escapedDir);
+                    auto* psProc = new QProcess(this);
+                    connect(psProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                        [this, psProc, tmpZipPath, targetExe](int psCode, QProcess::ExitStatus) {
+                            psProc->deleteLater();
+                            QFile::remove(tmpZipPath);
+                            m_isDownloadingMasscan = false;
+                            bool ok = (psCode == 0 && QFileInfo::exists(targetExe));
+                            finalizeMasscanExtraction(ok, targetExe, tmpZipPath);
+                        });
+                    psProc->start("powershell.exe", {"-NoProfile", "-Command", psCmd});
+                    return;
+                }
+                QFile::remove(tmpZipPath);
+                m_isDownloadingMasscan = false;
+                finalizeMasscanExtraction(extracted, targetExe, tmpZipPath);
+            });
+        proc->start("tar.exe", {"-xf", tmpZipPath, "-C", appDir});
+    });
+}
+
+void MainWindow::finalizeMasscanExtraction(bool success, const QString& targetExe, const QString& tmpZipPath) {
+    if (success) {
+        m_masscanBadge->setDownloadFinished(true);
+        checkDependencies();
+        updateCommandAndValidation();
+        handleLogLine(QString("[%1] Masscan successfully downloaded and installed to %2")
+                          .arg(QTime::currentTime().toString("HH:mm:ss"), targetExe));
+    } else {
+        m_masscanBadge->setDownloadFinished(false);
+        handleLogLine(QString("[%1] Extraction failed for %2").arg(QTime::currentTime().toString("HH:mm:ss"), tmpZipPath));
+    }
+}
+
+void MainWindow::startNpcapDownload() {
+    if (m_isDownloadingNpcap) return;
+
+    if (m_npcapState != 0) {
+        checkDependencies();
+        return;
+    }
+
+    m_isDownloadingNpcap = true;
+    m_npcapBadge->startDownloadAnimation();
+
+    handleLogLine(QString("[%1] Connecting to https://npcap.com/dist/ to resolve the latest installer...")
+                      .arg(QTime::currentTime().toString("HH:mm:ss")));
+
+    if (!m_netManager) {
+        m_netManager = new QNetworkAccessManager(this);
+    }
+
+    QUrl distUrl("https://npcap.com/dist/");
+    QNetworkRequest distReq(distUrl);
+    distReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    distReq.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MasscanGUI/1.0");
+
+    QNetworkReply* distReply = m_netManager->get(distReq);
+    connect(distReply, &QNetworkReply::finished, this, [this, distReply]() {
+        QString latestFile = "npcap-1.90.exe";
+
+        if (distReply->error() == QNetworkReply::NoError) {
+            QString html = QString::fromUtf8(distReply->readAll());
+            // Match all official installers: npcap-<major>.<minor>[.<patch>].exe
+            // Strictly exclude debug builds (-debug) and older non-release files
+            QRegularExpression re("href=[\"'](?:.*/)?(npcap-(\\d+)\\.(\\d+)(?:\\.(\\d+))?\\.exe)[\"']", QRegularExpression::CaseInsensitiveOption);
+            auto it = re.globalMatch(html);
+            std::tuple<int, int, int> maxVer{-1, -1, -1};
+            QString bestFile;
+
+            while (it.hasNext()) {
+                auto m = it.next();
+                int maj = m.captured(2).toInt();
+                int min = m.captured(3).toInt();
+                int patch = m.captured(4).isEmpty() ? 0 : m.captured(4).toInt();
+
+                std::tuple<int, int, int> ver{maj, min, patch};
+                if (ver > maxVer) {
+                    maxVer = ver;
+                    bestFile = m.captured(1);
+                }
+            }
+
+            if (!bestFile.isEmpty()) {
+                latestFile = bestFile;
+                auto [maj, min, patch] = maxVer;
+                handleLogLine(QString("[%1] Latest Npcap version found: %2 (v%3.%4) from https://npcap.com/dist/")
+                                  .arg(QTime::currentTime().toString("HH:mm:ss"), latestFile)
+                                  .arg(maj).arg(min));
+            }
+        } else {
+            handleLogLine(QString("[%1] Warning: could not parse directory list from npcap.com, falling back to %2")
+                              .arg(QTime::currentTime().toString("HH:mm:ss"), latestFile));
+        }
+        distReply->deleteLater();
+
+        downloadNpcapInstaller(latestFile);
+    });
+}
+
+void MainWindow::downloadNpcapInstaller(const QString& filename) {
+    QUrl fileUrl("https://npcap.com/dist/" + filename);
+    QString tmpExePath = QDir::tempPath() + "/" + filename;
+    QFile::remove(tmpExePath);
+
+    auto file = std::make_shared<QFile>(tmpExePath);
+    if (!file->open(QIODevice::WriteOnly)) {
+        m_isDownloadingNpcap = false;
+        m_npcapBadge->setDownloadFinished(false);
+        handleLogLine(QString("[%1] Error creating temporary file: %2")
+                          .arg(QTime::currentTime().toString("HH:mm:ss"), tmpExePath));
+        return;
+    }
+
+    handleLogLine(QString("[%1] Downloading %2 from https://npcap.com/dist/...")
+                      .arg(QTime::currentTime().toString("HH:mm:ss"), filename));
+
+    QNetworkRequest request(fileUrl);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MasscanGUI/1.0");
+
+    QNetworkReply* reply = m_netManager->get(request);
+
+    connect(reply, &QNetworkReply::downloadProgress, this, [this](qint64 bytesReceived, qint64 bytesTotal) {
+        if (bytesTotal > 0) {
+            double pct = static_cast<double>(bytesReceived) / static_cast<double>(bytesTotal);
+            m_npcapBadge->setDownloadProgress(pct);
+        } else if (bytesReceived > 0) {
+            m_npcapBadge->setDownloadStatus(QString("%1 KB").arg(bytesReceived / 1024));
+        }
+    });
+
+    connect(reply, &QNetworkReply::readyRead, this, [reply, file]() {
+        file->write(reply->readAll());
+    });
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, file, tmpExePath, filename]() {
+        if (reply->bytesAvailable() > 0) {
+            file->write(reply->readAll());
+        }
+        file->flush();
+        file->close();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString errStr = reply->errorString();
+            reply->deleteLater();
+            QFile::remove(tmpExePath);
+            m_isDownloadingNpcap = false;
+            m_npcapBadge->setDownloadFinished(false);
+            handleLogLine(QString("[%1] Npcap download failed: %2")
+                              .arg(QTime::currentTime().toString("HH:mm:ss"), errStr));
+            return;
+        }
+
+        reply->deleteLater();
+
+        m_npcapBadge->setDownloadStatus("Launching...");
+        handleLogLine(QString("[%1] %2 downloaded successfully. Launching setup wizard...")
+                          .arg(QTime::currentTime().toString("HH:mm:ss"), filename));
+
+        QTimer::singleShot(100, this, [this, tmpExePath]() {
+            qint64 installerPid = 0;
+            bool launched = QProcess::startDetached(tmpExePath, {}, QString(), &installerPid);
+            m_isDownloadingNpcap = false;
+
+            if (launched) {
+                m_npcapBadge->setDownloadStatus("Setup...");
+                handleLogLine(QString("[%1] Npcap installer started. Please complete the installation wizard.")
+                                  .arg(QTime::currentTime().toString("HH:mm:ss")));
+
+                // Watch for installation completion or cancellation
+                auto* installWatchTimer = new QTimer(this);
+                installWatchTimer->setInterval(1500);
+                auto watchCount = std::make_shared<int>(0);
+
+                connect(installWatchTimer, &QTimer::timeout, this, [this, installWatchTimer, watchCount, installerPid]() {
+                    (*watchCount)++;
+                    checkDependencies();
+                    if (m_npcapState != 0) {
+                        m_npcapBadge->setDownloadFinished(true);
+                        handleLogLine(QString("[%1] Npcap driver successfully installed and verified!")
+                                          .arg(QTime::currentTime().toString("HH:mm:ss")));
+                        installWatchTimer->stop();
+                        installWatchTimer->deleteLater();
+                        return;
+                    }
+
+#ifdef _WIN32
+                    if (installerPid > 0) {
+                        HANDLE hProc = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(installerPid));
+                        if (hProc) {
+                            DWORD waitRes = WaitForSingleObject(hProc, 0);
+                            CloseHandle(hProc);
+                            if (waitRes != WAIT_TIMEOUT) {
+                                // Installer process has exited!
+                                checkDependencies();
+                                if (m_npcapState != 0) {
+                                    m_npcapBadge->setDownloadFinished(true);
+                                    handleLogLine(QString("[%1] Npcap driver successfully installed and verified!")
+                                                      .arg(QTime::currentTime().toString("HH:mm:ss")));
+                                } else {
+                                    m_npcapBadge->resetDownload();
+                                    handleLogLine(QString("[%1] Npcap installer was closed without completing installation.")
+                                                      .arg(QTime::currentTime().toString("HH:mm:ss")));
+                                }
+                                installWatchTimer->stop();
+                                installWatchTimer->deleteLater();
+                                return;
+                            }
+                        }
+                    }
+#endif
+
+                    if (*watchCount > 80) { // Timeout fallback
+                        m_npcapBadge->resetDownload();
+                        installWatchTimer->stop();
+                        installWatchTimer->deleteLater();
+                    }
+                });
+                installWatchTimer->start();
+            } else {
+                m_npcapBadge->setDownloadFinished(false);
+                handleLogLine(QString("[%1] Failed to launch Npcap installer: %2")
+                                  .arg(QTime::currentTime().toString("HH:mm:ss"), tmpExePath));
+            }
+        });
+    });
 }
 
 void MainWindow::checkDependencies() {
@@ -2103,16 +2322,6 @@ void MainWindow::showEvent(QShowEvent* event) {
     QMainWindow::showEvent(event);
     applyResponsiveLayout(width());
     updateCommandCardHeight();
-
-    static bool initialMasscanChecked = false;
-    if (!initialMasscanChecked) {
-        initialMasscanChecked = true;
-        QTimer::singleShot(400, this, [this]() {
-            if (m_masscanState == 0) {
-                promptAndDownloadMasscan(false);
-            }
-        });
-    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
@@ -2242,14 +2451,32 @@ void MainWindow::handleScannerProgress(float pct, double kpps, const QString& et
     m_footerPctLabel->setText(QString::number(pct, 'f', 1) + "% done");
     if (!eta.isEmpty()) m_footerEtaLabel->setText("ETA " + eta);
     if (kpps > 0.0) m_footerKppsLabel->setText(QString::number(kpps, 'f', 2) + " kpps");
-    m_footerFoundLabel->setText(QString("Found %1").arg(found));
-    m_pillResults->setText(QString("Results (%1)").arg(found));
+    int totalFound = std::max(static_cast<int>(m_discoveredKeys.size()), found);
+    m_footerFoundLabel->setText(QString("Found %1").arg(totalFound));
+    m_pillResults->setText(QString("Results (%1)").arg(totalFound));
 }
 
 void MainWindow::handlePortDiscovered(const QString& ip, int port, const QString& proto, const QString& state, const QString& banner, const QString& timeStr) {
     // 1. De-duplicate findings (ignore repeated SYN-ACKs for the same target)
     std::string key = ip.toStdString() + ":" + std::to_string(port) + "/" + proto.toLower().toStdString();
     if (!m_discoveredKeys.insert(key).second) {
+        // Port already discovered. Check if this is a banner update!
+        if (!banner.isEmpty() && banner != "-" && banner != "open") {
+            for (int r = m_resultsTable->rowCount() - 1; r >= 0; --r) {
+                auto* itemIp = m_resultsTable->item(r, 0);
+                auto* itemPort = m_resultsTable->item(r, 1);
+                auto* itemProto = m_resultsTable->item(r, 2);
+                if (itemIp && itemPort && itemProto &&
+                    itemIp->text() == ip &&
+                    itemPort->data(Qt::DisplayRole).toInt() == port &&
+                    itemProto->text().compare(proto, Qt::CaseInsensitive) == 0) {
+                    if (auto* itemService = m_resultsTable->item(r, 3)) {
+                        itemService->setText(banner);
+                    }
+                    break;
+                }
+            }
+        }
         return;
     }
 
@@ -2279,6 +2506,10 @@ void MainWindow::handlePortDiscovered(const QString& ip, int port, const QString
     m_resultsTable->setItem(r, 5, itemTime);
 
     m_resultsTable->scrollToBottom();
+
+    int totalFound = std::max(static_cast<int>(m_discoveredKeys.size()), m_scanner ? m_scanner->foundCount() : 0);
+    m_footerFoundLabel->setText(QString("Found %1").arg(totalFound));
+    m_pillResults->setText(QString("Results (%1)").arg(totalFound));
 }
 
 void MainWindow::handleLogLine(const QString& line) {
