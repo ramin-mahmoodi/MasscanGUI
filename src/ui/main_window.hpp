@@ -70,6 +70,7 @@ private slots:
     void onPortPresetSelected(int index);
     void onStartButtonClicked();
     void onStartScan();
+    void onPauseScan();
     void onStopScan();
     void onResumeScan();
     void onOpenOutputFolder();
@@ -327,6 +328,8 @@ private:
     bool m_isDownloadingMasscan{false};
     bool m_isDownloadingNpcap{false};
     QNetworkAccessManager* m_netManager{nullptr};
+
+    [[nodiscard]] QString resolveProgramPath(const QString& program) const;
 };
 
 } // namespace masscan::ui

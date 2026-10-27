@@ -10,6 +10,16 @@
 #include <QDebug>
 #include <algorithm>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <signal.h>
+#include <sys/types.h>
+#endif
+
 namespace masscan {
 
 ScannerProcess::ScannerProcess(QObject* parent)
@@ -29,6 +39,11 @@ ScannerProcess::ScannerProcess(QObject* parent)
 
 ScannerProcess::~ScannerProcess() {
     stopScan();
+}
+
+bool ScannerProcess::canResume() const {
+    if (m_state == State::Paused) return true;
+    return QFile::exists("paused.conf");
 }
 
 QString ScannerProcess::lookupServiceName(int port, const QString& proto) {
@@ -81,8 +96,11 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
         return false;
     }
 
+    m_lastProgram = program;
     m_simulate = simulate;
     m_userStopped = false;
+    m_isSuspended = false;
+    m_canResume = false;
     m_pct = 0.0f;
     m_kpps = 0.0;
     m_found = 0;
@@ -142,6 +160,42 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     return true;
 }
 
+void ScannerProcess::pauseScan() {
+    if (m_state != State::Scanning) return;
+
+    if (m_simTimer->isActive()) {
+        m_simTimer->stop();
+    }
+    if (m_tailTimer->isActive()) {
+        pollOutputFile();
+        m_tailTimer->stop();
+    }
+
+#ifdef _WIN32
+    if (m_process && m_process->processId() > 0) {
+        typedef LONG (NTAPI *pfnNtSuspendProcess)(HANDLE ProcessHandle);
+        static auto NtSuspendProcess = reinterpret_cast<pfnNtSuspendProcess>(
+            reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSuspendProcess")));
+        if (NtSuspendProcess) {
+            HANDLE h = OpenProcess(0x0800, FALSE, static_cast<DWORD>(m_process->processId()));
+            if (h) {
+                NtSuspendProcess(h);
+                CloseHandle(h);
+                m_isSuspended = true;
+            }
+        }
+    }
+#else
+    if (m_process && m_process->processId() > 0) {
+        ::kill(static_cast<pid_t>(m_process->processId()), SIGSTOP);
+        m_isSuspended = true;
+    }
+#endif
+
+    setState(State::Paused, "Scan paused");
+    emit logLineReceived(QString("[%1] Scan was paused by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+}
+
 void ScannerProcess::stopScan() {
     if (m_simTimer->isActive()) {
         m_simTimer->stop();
@@ -154,6 +208,24 @@ void ScannerProcess::stopScan() {
 
     m_userStopped = true;
 
+    if (m_isSuspended && m_process && m_process->state() == QProcess::Running) {
+#ifdef _WIN32
+        typedef LONG (NTAPI *pfnNtResumeProcess)(HANDLE ProcessHandle);
+        static auto NtResumeProcess = reinterpret_cast<pfnNtResumeProcess>(
+            reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtResumeProcess")));
+        if (NtResumeProcess) {
+            HANDLE h = OpenProcess(0x0800, FALSE, static_cast<DWORD>(m_process->processId()));
+            if (h) {
+                NtResumeProcess(h);
+                CloseHandle(h);
+            }
+        }
+#else
+        ::kill(static_cast<pid_t>(m_process->processId()), SIGCONT);
+#endif
+        m_isSuspended = false;
+    }
+
     if (m_process->state() != QProcess::NotRunning) {
         m_process->terminate();
         if (!m_process->waitForFinished(500)) {
@@ -162,15 +234,46 @@ void ScannerProcess::stopScan() {
         }
     }
 
-    m_canResume = true;
-    setState(State::Paused, "Scan stopped by user");
+    m_canResume = false;
+    setState(State::Idle, "Scan stopped by user");
     emit logLineReceived(QString("[%1] Scan was stopped by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
 }
 
 void ScannerProcess::resumeScan(const QString& program) {
+    if (m_state == State::Paused && m_isSuspended && m_process && m_process->state() == QProcess::Running) {
+#ifdef _WIN32
+        typedef LONG (NTAPI *pfnNtResumeProcess)(HANDLE ProcessHandle);
+        static auto NtResumeProcess = reinterpret_cast<pfnNtResumeProcess>(
+            reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtResumeProcess")));
+        if (NtResumeProcess) {
+            HANDLE h = OpenProcess(0x0800, FALSE, static_cast<DWORD>(m_process->processId()));
+            if (h) {
+                NtResumeProcess(h);
+                CloseHandle(h);
+                m_isSuspended = false;
+            }
+        }
+#else
+        ::kill(static_cast<pid_t>(m_process->processId()), SIGCONT);
+        m_isSuspended = false;
+#endif
+
+        if (!m_tailFilePath.isEmpty() && m_tailTimer) {
+            m_tailTimer->start(200);
+        }
+        if (m_simulate && m_simTimer) {
+            m_simTimer->start(100);
+        }
+
+        setState(State::Scanning, "Scanning...");
+        emit logLineReceived(QString("[%1] Scan resumed.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+        return;
+    }
+
+    QString prog = program.isEmpty() ? m_lastProgram : program;
     QStringList args;
     args << "--resume" << "paused.conf";
-    startScan(program, args, m_simulate);
+    startScan(prog, args, m_simulate);
 }
 
 void ScannerProcess::setState(State state, const QString& text) {
@@ -466,10 +569,12 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
         m_stderrBuf.clear();
     }
 
+    m_isSuspended = false;
+
     if (m_userStopped) {
         m_userStopped = false;
-        m_canResume = true;
-        setState(State::Paused, "Scan stopped by user");
+        m_canResume = false;
+        setState(State::Idle, "Scan stopped by user");
         emit scanFinished(exitCode, true);
         return;
     }

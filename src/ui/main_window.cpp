@@ -1623,9 +1623,30 @@ void MainWindow::updateCommandCardHeight() {
     m_cmdCard->setFixedHeight(std::clamp(preferredH, 98, 230));
 }
 
+QString MainWindow::resolveProgramPath(const QString& program) const {
+    if (QFileInfo::exists(program) && QFileInfo(program).isFile()) {
+        return program;
+    }
+    QString appDirProg = QCoreApplication::applicationDirPath() + "/" + program;
+    if (QFileInfo::exists(appDirProg) && QFileInfo(appDirProg).isFile()) {
+        return appDirProg;
+    }
+    if (QFileInfo::exists(QCoreApplication::applicationDirPath() + "/masscan.exe")) {
+        return QCoreApplication::applicationDirPath() + "/masscan.exe";
+    }
+    if (QFileInfo::exists("masscan.exe")) {
+        return QDir::current().absoluteFilePath("masscan.exe");
+    }
+    QString inPath = QStandardPaths::findExecutable(program);
+    if (!inPath.isEmpty()) {
+        return inPath;
+    }
+    return program;
+}
+
 void MainWindow::onStartButtonClicked() {
     if (m_scanner && m_scanner->isRunning()) {
-        onStopScan(); // Pauses the active scan
+        onPauseScan(); // Pauses the active scan
     } else if (m_scanner && m_scanner->canResume()) {
         onResumeScan(); // Resumes paused scan
     } else {
@@ -1666,19 +1687,7 @@ void MainWindow::onStartScan() {
         write_targets_file((dir + "/targets.txt").toStdString(), manualTargets, countryCodes, lines, addrs);
     }
 
-    QString actualProgram = program;
-    if (QFileInfo::exists(program) && QFileInfo(program).isFile()) {
-        actualProgram = program;
-    } else if (QFileInfo::exists(QCoreApplication::applicationDirPath() + "/masscan.exe")) {
-        actualProgram = QCoreApplication::applicationDirPath() + "/masscan.exe";
-    } else if (QFileInfo::exists("masscan.exe")) {
-        actualProgram = QDir::current().absoluteFilePath("masscan.exe");
-    } else {
-        QString inPath = QStandardPaths::findExecutable(program);
-        if (!inPath.isEmpty()) {
-            actualProgram = inPath;
-        }
-    }
+    QString actualProgram = resolveProgramPath(program);
 
     bool realBinaryExists = QFileInfo::exists(actualProgram) && QFileInfo(actualProgram).isFile();
     if (!realBinaryExists) {
@@ -1722,27 +1731,64 @@ void MainWindow::onStartScan() {
     }
 }
 
-void MainWindow::onStopScan() {
-    m_scanner->stopScan();
-    bool canResume = m_scanner->canResume();
+void MainWindow::onPauseScan() {
+    if (!m_scanner) return;
+    m_scanner->pauseScan();
     m_btnStart->setEnabled(true);
-    m_btnStart->setText(canResume ? "Resume" : "Start Scan");
-    m_btnStart->setIcon(Icons::get(canResume ? Icons::Resume : Icons::Play, Qt::white, 16));
-    m_btnStop->setEnabled(false);
-    m_btnResume->setEnabled(canResume);
+    m_btnStart->setText("Resume");
+    m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+    m_btnStop->setEnabled(true);
+    m_btnResume->setEnabled(true);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setText(canResume ? "Resume" : "Start Scan");
-        m_btnStartNarrow->setIcon(Icons::get(canResume ? Icons::Resume : Icons::Play, Qt::white, 16));
+        m_btnStartNarrow->setText("Resume");
+        m_btnStartNarrow->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+    }
+    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
+    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(true);
+}
+
+void MainWindow::onStopScan() {
+    if (!m_scanner) return;
+    m_scanner->stopScan();
+    m_btnStart->setEnabled(true);
+    m_btnStart->setText("Start Scan");
+    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+    m_btnStop->setEnabled(false);
+    m_btnResume->setEnabled(m_scanner->canResume());
+    if (m_btnStartNarrow) {
+        m_btnStartNarrow->setEnabled(true);
+        m_btnStartNarrow->setText("Start Scan");
+        m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
     }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
-    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(canResume);
+    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(m_scanner->canResume());
 }
 
 void MainWindow::onResumeScan() {
+    if (!m_scanner) return;
+
+    if (m_scanner->isPaused()) {
+        m_scanner->resumeScan();
+        m_btnStart->setEnabled(true);
+        m_btnStart->setText("Pause");
+        m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+        m_btnStop->setEnabled(true);
+        m_btnResume->setEnabled(false);
+        if (m_btnStartNarrow) {
+            m_btnStartNarrow->setEnabled(true);
+            m_btnStartNarrow->setText("Pause");
+            m_btnStartNarrow->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+        }
+        if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
+        if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
+        return;
+    }
+
     m_resumeMode = true;
     updateCommandAndValidation();
-    QString bin = QString::fromStdString(m_currentBuilt.args.empty() ? "masscan" : m_currentBuilt.args[0]);
+    QString rawBin = QString::fromStdString(m_currentBuilt.args.empty() ? "masscan" : m_currentBuilt.args[0]);
+    QString bin = resolveProgramPath(rawBin);
     m_scanner->resumeScan(bin);
     m_btnStart->setEnabled(true);
     m_btnStart->setText("Pause");

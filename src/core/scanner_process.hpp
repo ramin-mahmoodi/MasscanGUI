@@ -24,14 +24,16 @@ public:
     ~ScannerProcess() override;
 
     bool startScan(const QString& program, const QStringList& args, bool simulate = false);
+    void pauseScan();
+    void resumeScan(const QString& program = QString());
     void stopScan();
-    void resumeScan(const QString& program);
     void resetFoundCount() noexcept { m_found = 0; }
     [[nodiscard]] int foundCount() const noexcept { return m_found; }
     static QString lookupServiceName(int port, const QString& proto);
 
     [[nodiscard]] bool isRunning() const { return m_state == State::Scanning; }
-    [[nodiscard]] bool canResume() const { return m_canResume; }
+    [[nodiscard]] bool isPaused() const { return m_state == State::Paused; }
+    [[nodiscard]] bool canResume() const;
     [[nodiscard]] State state() const { return m_state; }
 
 signals:
@@ -62,6 +64,8 @@ private:
     bool m_simulate{false};
     bool m_canResume{false};
     bool m_userStopped{false};
+    bool m_isSuspended{false};
+    QString m_lastProgram;
 
     QByteArray m_stdoutBuf;
     QByteArray m_stderrBuf;
