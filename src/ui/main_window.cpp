@@ -846,7 +846,7 @@ CardWidget* MainWindow::createSidebar() {
     connect(m_btnImportTargets, &QPushButton::clicked, this, &MainWindow::onImportTargets);
     connect(m_portPresetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onPortPresetSelected);
 
-    connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStartScan);
+    connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
     connect(m_btnStop, &QPushButton::clicked, this, &MainWindow::onStopScan);
     connect(m_btnResume, &QPushButton::clicked, this, &MainWindow::onResumeScan);
     connect(m_btnOpenFolder, &QPushButton::clicked, this, &MainWindow::onOpenOutputFolder);
@@ -934,7 +934,7 @@ QWidget* MainWindow::createRightColumn() {
     nActLayout->addWidget(m_btnResumeNarrow);
     nActLayout->addWidget(m_btnOpenFolderNarrow);
 
-    connect(m_btnStartNarrow, &QPushButton::clicked, this, &MainWindow::onStartScan);
+    connect(m_btnStartNarrow, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
     connect(m_btnStopNarrow, &QPushButton::clicked, this, &MainWindow::onStopScan);
     connect(m_btnResumeNarrow, &QPushButton::clicked, this, &MainWindow::onResumeScan);
     connect(m_btnOpenFolderNarrow, &QPushButton::clicked, this, &MainWindow::onOpenOutputFolder);
@@ -1560,12 +1560,22 @@ void MainWindow::updateCommandAndValidation() {
 
     bool canStart = !hasErr && (!manualTargets.empty() || !countryCodes.empty() || s.all_ipv4 || !s.conffile.empty() || s.mode >= 3);
     bool isScanning = m_scanner && m_scanner->isRunning();
-    bool startAllowed = canStart && !isScanning;
-    m_btnStart->setEnabled(startAllowed);
-    m_btnStart->setText(isScanning ? "Scanning..." : "Start Scan");
+    bool canResume = m_scanner && m_scanner->canResume();
+    m_btnStart->setEnabled(isScanning || canResume || canStart);
+    if (isScanning) {
+        m_btnStart->setText("Pause");
+        m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
+    } else if (canResume) {
+        m_btnStart->setText("Resume");
+        m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+    } else {
+        m_btnStart->setText("Start Scan");
+        m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+    }
     if (m_btnStartNarrow) {
-        m_btnStartNarrow->setEnabled(startAllowed);
-        m_btnStartNarrow->setText(isScanning ? "Scanning..." : "Start Scan");
+        m_btnStartNarrow->setEnabled(m_btnStart->isEnabled());
+        m_btnStartNarrow->setText(m_btnStart->text());
+        m_btnStartNarrow->setIcon(m_btnStart->icon());
     }
 }
 
@@ -1611,6 +1621,16 @@ void MainWindow::updateCommandCardHeight() {
     // padding-top(10) + cmdH + (warnsH > 0 ? 6 + warnsH : 0) + padding-bottom(10) + border(2)
     int preferredH = 10 + cmdH + (warnsH > 0 ? (6 + warnsH) : 0) + 10 + 2;
     m_cmdCard->setFixedHeight(std::clamp(preferredH, 98, 230));
+}
+
+void MainWindow::onStartButtonClicked() {
+    if (m_scanner && m_scanner->isRunning()) {
+        onStopScan(); // Pauses the active scan
+    } else if (m_scanner && m_scanner->canResume()) {
+        onResumeScan(); // Resumes paused scan
+    } else {
+        onStartScan(); // Starts fresh scan
+    }
 }
 
 void MainWindow::onStartScan() {
@@ -1686,15 +1706,15 @@ void MainWindow::onStartScan() {
 #endif
 
     if (m_scanner->startScan(actualProgram, args, false)) {
-        m_btnStart->setEnabled(false);
-        m_btnStart->setText("Scanning...");
-        m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+        m_btnStart->setEnabled(true);
+        m_btnStart->setText("Pause");
+        m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
         m_btnStop->setEnabled(true);
         m_btnResume->setEnabled(false);
         if (m_btnStartNarrow) {
-            m_btnStartNarrow->setEnabled(false);
-            m_btnStartNarrow->setText("Scanning...");
-            m_btnStartNarrow->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+            m_btnStartNarrow->setEnabled(true);
+            m_btnStartNarrow->setText("Pause");
+            m_btnStartNarrow->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
         }
         if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
         if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);
@@ -1704,18 +1724,19 @@ void MainWindow::onStartScan() {
 
 void MainWindow::onStopScan() {
     m_scanner->stopScan();
+    bool canResume = m_scanner->canResume();
     m_btnStart->setEnabled(true);
-    m_btnStart->setText("Start Scan");
-    m_btnStart->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+    m_btnStart->setText(canResume ? "Resume" : "Start Scan");
+    m_btnStart->setIcon(Icons::get(canResume ? Icons::Resume : Icons::Play, Qt::white, 16));
     m_btnStop->setEnabled(false);
-    m_btnResume->setEnabled(m_scanner->canResume());
+    m_btnResume->setEnabled(canResume);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setText("Start Scan");
-        m_btnStartNarrow->setIcon(Icons::get(Icons::Play, Qt::white, 16));
+        m_btnStartNarrow->setText(canResume ? "Resume" : "Start Scan");
+        m_btnStartNarrow->setIcon(Icons::get(canResume ? Icons::Resume : Icons::Play, Qt::white, 16));
     }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
-    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(m_scanner->canResume());
+    if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(canResume);
 }
 
 void MainWindow::onResumeScan() {
@@ -1723,15 +1744,15 @@ void MainWindow::onResumeScan() {
     updateCommandAndValidation();
     QString bin = QString::fromStdString(m_currentBuilt.args.empty() ? "masscan" : m_currentBuilt.args[0]);
     m_scanner->resumeScan(bin);
-    m_btnStart->setEnabled(false);
-    m_btnStart->setText("Scanning...");
-    m_btnStart->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+    m_btnStart->setEnabled(true);
+    m_btnStart->setText("Pause");
+    m_btnStart->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
     m_btnStop->setEnabled(true);
     m_btnResume->setEnabled(false);
     if (m_btnStartNarrow) {
-        m_btnStartNarrow->setEnabled(false);
-        m_btnStartNarrow->setText("Scanning...");
-        m_btnStartNarrow->setIcon(Icons::get(Icons::Resume, Qt::white, 16));
+        m_btnStartNarrow->setEnabled(true);
+        m_btnStartNarrow->setText("Pause");
+        m_btnStartNarrow->setIcon(Icons::get(Icons::Pause, Qt::white, 16));
     }
     if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(true);
     if (m_btnResumeNarrow) m_btnResumeNarrow->setEnabled(false);

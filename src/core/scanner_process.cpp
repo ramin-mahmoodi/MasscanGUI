@@ -285,6 +285,65 @@ void ScannerProcess::parseOutputLine(const QString& line) {
         }
     }
 
+    // 2c. Detect Grepable format (-oG): "Timestamp: ... Host: 192.168.1.1 () Ports: 80/open/tcp//http//"
+    if (line.contains("Host:") && line.contains("Ports:")) {
+        static const QRegularExpression grepRegex(R"(Host:\s+([0-9a-fA-F\.\:]+).*?Ports:\s+(\d+)\/(\w+)\/(\w+)\/\/([^\/]*)?)",
+                                                  QRegularExpression::CaseInsensitiveOption);
+        auto gMatch = grepRegex.match(line);
+        if (gMatch.hasMatch()) {
+            QString ip = gMatch.captured(1);
+            int port = gMatch.captured(2).toInt();
+            QString state = gMatch.captured(3);
+            QString proto = gMatch.captured(4).toUpper();
+            QString banner = gMatch.captured(5).trimmed();
+            if (banner.isEmpty()) banner = lookupServiceName(port, proto);
+            QString timeStr = QDateTime::currentDateTime().toString("hh:mm:ss");
+            m_found++;
+            emit portDiscovered(ip, port, proto, state, banner, timeStr);
+            emit progressUpdated(m_pct, m_kpps, "", m_found);
+            return;
+        }
+    }
+
+    // 2d. Detect XML format (-oX): <host ...><address addr="192.168.1.1" .../><ports><port protocol="tcp" portid="80"><state state="open" .../></port></ports></host>
+    if (line.contains("<host") && line.contains("<address") && line.contains("<port")) {
+        static const QRegularExpression xmlRegex(
+            "addr=\"([0-9a-fA-F\\.:]+)\".*?protocol=\"(\\w+)\".*?portid=\"(\\d+)\".*?state=\"(\\w+)\"",
+            QRegularExpression::CaseInsensitiveOption);
+        auto xMatch = xmlRegex.match(line);
+        if (xMatch.hasMatch()) {
+            QString ip = xMatch.captured(1);
+            QString proto = xMatch.captured(2).toUpper();
+            int port = xMatch.captured(3).toInt();
+            QString state = xMatch.captured(4);
+            QString svc = lookupServiceName(port, proto);
+            QString timeStr = QDateTime::currentDateTime().toString("hh:mm:ss");
+            m_found++;
+            emit portDiscovered(ip, port, proto, state, svc, timeStr);
+            emit progressUpdated(m_pct, m_kpps, "", m_found);
+            return;
+        }
+    }
+
+    // 2e. Detect Unicornscan format (-oU): "TCP open http[ 80] from 192.168.1.1 ttl 64"
+    if (line.contains(" open") && line.contains("from ") && line.contains("[")) {
+        static const QRegularExpression uniRegex(R"((\w+)\s+open\s+([a-zA-Z0-9_\-\.]+)?\[\s*(\d+)\]\s+from\s+([0-9a-fA-F\.\:]+))",
+                                                 QRegularExpression::CaseInsensitiveOption);
+        auto uMatch = uniRegex.match(line);
+        if (uMatch.hasMatch()) {
+            QString proto = uMatch.captured(1).toUpper();
+            QString svc = uMatch.captured(2).trimmed();
+            int port = uMatch.captured(3).toInt();
+            QString ip = uMatch.captured(4);
+            if (svc.isEmpty()) svc = lookupServiceName(port, proto);
+            QString timeStr = QDateTime::currentDateTime().toString("hh:mm:ss");
+            m_found++;
+            emit portDiscovered(ip, port, proto, "open", svc, timeStr);
+            emit progressUpdated(m_pct, m_kpps, "", m_found);
+            return;
+        }
+    }
+
     // 3. Detect NDJSON / JSON format (-oD / -oJ):
     // NDJSON (-oD): {"ip":"1.1.1.1","port":80,"proto":"tcp","rec_type":"status","data":{"status":"open",...}}
     // Multi-port JSON (-oJ): [{"ip":"1.1.1.1","ports":[...]}, ...]

@@ -15,6 +15,7 @@ public:
     static inline const char* Menu = "M 4 7 L 20 7 M 4 12 L 20 12 M 4 17 L 20 17";
     static inline const char* Close = "M 6 6 L 18 18 M 18 6 L 6 18";
     static inline const char* Play = "M 7 4 L 20 12 L 7 20 Z";
+    static inline const char* Pause = "M 7 5 H 10 V 19 H 7 Z M 14 5 H 17 V 19 H 14 Z";
     static inline const char* Stop = "M 6 6 L 18 6 L 18 18 L 6 18 Z";
     static inline const char* Resume = "M 4 12 A 8 8 0 1 0 7 6 M 4 3 L 4 8 L 9 8";
     static inline const char* Folder = "M 3 6 L 9 6 L 11 9 L 21 9 L 21 19 L 3 19 Z";

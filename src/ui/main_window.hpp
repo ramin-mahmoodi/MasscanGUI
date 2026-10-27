@@ -68,6 +68,7 @@ private slots:
     void onClearAllTargets();
     void onImportTargets();
     void onPortPresetSelected(int index);
+    void onStartButtonClicked();
     void onStartScan();
     void onStopScan();
     void onResumeScan();
