@@ -27,7 +27,6 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
-          modules: 'qtimageformats'
 
       - name: Configure CMake
         run: cmake -B build -S .
@@ -56,22 +55,38 @@ jobs:
           $windeploy = $windeployCmd.Source
           Write-Output "Found windeployqt at: $windeploy"
 
-          # 2. Run windeployqt to bundle Qt libraries and plugins
-          & $windeploy --release --no-translations --no-compiler-runtime --dir "$outDir" "$exe"
+          # 2. Run windeployqt without software opengl
+          & $windeploy --release --no-translations --no-opengl-sw --no-compiler-runtime --dir "$outDir" "$exe"
 
-          # 3. Copy MSVC CRT redistributable libraries so app runs without VC++ runtime installation
+          # 3. Copy MSVC CRT redistributable libraries so app runs on clean Windows machines
           $crt = Get-ChildItem -Path "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($crt) {
             Write-Output "Bundling MSVC CRT from: $($crt.FullName)"
             Copy-Item "$($crt.FullName)\*.dll" -Destination "$outDir" -Force
           }
 
-          # 4. Copy data directory cleanly
+          # 4. Remove heavy optional fallback graphics libraries (saves ~40MB uncompressed / ~18MB in zip)
+          $heavyDlls = @("opengl32sw.dll", "dxcompiler.dll", "dxil.dll", "d3dcompiler_47.dll")
+          foreach ($f in $heavyDlls) {
+            $p = Join-Path $outDir $f
+            if (Test-Path $p) {
+              Remove-Item -Force $p
+              Write-Output "Trimmed heavy optional library: $f"
+            }
+          }
+
+          # Clean up unused imageformats plugins (only keep SVG and ICO)
+          $imgDir = Join-Path $outDir "imageformats"
+          if (Test-Path $imgDir) {
+            Get-ChildItem -Path $imgDir -Exclude "qico.dll","qsvg.dll" | Remove-Item -Force
+          }
+
+          # 5. Copy data directory cleanly
           if (Test-Path "data") {
             Copy-Item -Recurse -Force "data" "$outDir"
           }
 
-          # 5. Verify deployment completeness
+          # 6. Verify deployment completeness
           $dlls = Get-ChildItem -Path "$outDir" -Filter "*.dll"
           Write-Output "Deployed DLLs in root: $($dlls.Count)"
           foreach ($d in $dlls) {
