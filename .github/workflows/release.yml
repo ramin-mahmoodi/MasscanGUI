@@ -34,7 +34,7 @@ jobs:
       - name: Build MasscanGUI
         run: cmake --build build --config Release
 
-      - name: Deploy Only Vital Dependencies
+      - name: Bundle Only Vital DLLs into Single MasscanGUI.exe
         shell: pwsh
         run: |
           $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
@@ -44,7 +44,7 @@ jobs:
           }
           $exe = $exeItem.FullName
           $outDir = Split-Path -Parent $exe
-          Write-Output "Deploying dependencies to: $outDir for binary: $exe"
+          Write-Output "Deploying vital dependencies to: $outDir for binary: $exe"
 
           # 1. Locate windeployqt
           $windeployCmd = Get-Command "windeployqt.exe" -ErrorAction SilentlyContinue
@@ -53,7 +53,6 @@ jobs:
             exit 1
           }
           $windeploy = $windeployCmd.Source
-          Write-Output "Found windeployqt at: $windeploy"
 
           # 2. Run windeployqt without software opengl
           & $windeploy --release --no-translations --no-opengl-sw --no-compiler-runtime --dir "$outDir" "$exe"
@@ -73,12 +72,11 @@ jobs:
               $srcFile = Join-Path $crt.FullName $dll
               if (Test-Path $srcFile) {
                 Copy-Item $srcFile -Destination "$outDir" -Force
-                Write-Output "Bundled CRT library: $dll"
               }
             }
           }
 
-          # 4. Strip all heavy/unnecessary files and folders
+          # 4. Strip all heavy/unnecessary files and folders BEFORE packing into .exe
           $unneeded = @(
             "opengl32sw.dll",
             "dxcompiler.dll",
@@ -106,50 +104,77 @@ jobs:
             Get-ChildItem -Path $imgDir -Exclude "qico.dll","qsvg.dll" | Remove-Item -Force
           }
 
-          # 6. Copy data directory cleanly
-          if (Test-Path "data") {
-            Copy-Item -Recurse -Force "data" "$outDir"
-          }
+          # 6. Install Enigma Virtual Box to pack only vital DLLs into MasscanGUI.exe
+          Write-Output "Downloading Enigma Virtual Box..."
+          Invoke-WebRequest -Uri "https://www.enigmaprotector.com/assets/files/enigmavb.exe" -OutFile "enigmavb_setup.exe"
+          Start-Process -FilePath "enigmavb_setup.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+          Remove-Item -Force "enigmavb_setup.exe"
 
-          # 7. Verify all vital files exist
-          $vitalFiles = @(
-            "MasscanGUI.exe",
-            "Qt6Core.dll",
-            "Qt6Gui.dll",
-            "Qt6Widgets.dll",
-            "Qt6Network.dll",
-            "Qt6Svg.dll",
-            "vcruntime140.dll",
-            "msvcp140.dll",
-            "platforms/qwindows.dll",
-            "iconengines/qsvgicon.dll",
-            "tls/qschannelbackend.dll",
-            "data/geo.bin"
-          )
-          foreach ($f in $vitalFiles) {
-            if (-not (Test-Path "$outDir/$f")) {
-              Write-Error "Vital dependency missing from deployment: $f"
-              exit 1
+          $evbConsoleItem = Get-ChildItem -Path "C:\Program Files*" -Recurse -Filter "enigmavbconsole.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $evbConsoleItem) {
+            Write-Error "enigmavbconsole.exe not found after installation!"
+            exit 1
+          }
+          $evbConsole = $evbConsoleItem.FullName
+          Write-Output "Using Enigma Virtual Box Console: $evbConsole"
+
+          # 7. Generate EVB XML project with ONLY the vital DLLs (excluding MasscanGUI.exe and data/)
+          $distDir = New-Item -ItemType Directory -Path "dist_package" -Force
+          $packedExe = Join-Path $distDir.FullName "MasscanGUI.exe"
+          $evbFile = Join-Path $env:RUNNER_TEMP "project.evb"
+
+          function Build-EvbTreeXml($dirPath) {
+            $sb = New-Object System.Text.StringBuilder
+            $items = Get-ChildItem -Path $dirPath
+            foreach ($item in $items) {
+              if ($item.Name -eq "MasscanGUI.exe" -or $item.Name -eq "data") { continue }
+              if ($item.PSIsContainer) {
+                $inner = Build-EvbTreeXml $item.FullName
+                [void]$sb.Append("<File><Type>3</Type><Name>$($item.Name)</Name><Action>0</Action><OverwriteDateTime>false</OverwriteDateTime><OverwriteAttributes>false</OverwriteAttributes><Files>$inner</Files></File>")
+              } else {
+                [void]$sb.Append("<File><Type>2</Type><Name>$($item.Name)</Name><File>$($item.FullName)</File><ActiveX>false</ActiveX><ActiveXInstall>false</ActiveXInstall><Action>0</Action><OverwriteDateTime>false</OverwriteDateTime><OverwriteAttributes>false</OverwriteAttributes><PassCommandLine>false</PassCommandLine></File>")
+              }
             }
+            return $sb.ToString()
           }
 
-          $allFiles = Get-ChildItem -Path "$outDir" -Recurse -File
-          Write-Output "Total files in final package: $($allFiles.Count)"
-          foreach ($f in $allFiles) {
-            Write-Output "  $($f.FullName.Replace($outDir, '')) ($($f.Length) bytes)"
+          $filesXml = Build-EvbTreeXml $outDir
+          $evbXml = '<?xml encoding="utf-16"?><><InputFile>' + $exe + '</InputFile><OutputFile>' + $packedExe + '</OutputFile><Files><Enabled>true</Enabled><DeleteExtractedOnExit>true</DeleteExtractedOnExit><CompressFiles>true</CompressFiles><Files><File><Type>3</Type><Name>%DEFAULT FOLDER%</Name><Action>0</Action><OverwriteDateTime>false</OverwriteDateTime><OverwriteAttributes>false</OverwriteAttributes><Files>' + $filesXml + '</Files></File></Files></Files><Registries><Enabled>false</Enabled><Registries><Registry><Type>1</Type><Virtual>true</Virtual><Name>Classes</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>User</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>Machine</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>Users</Name><ValueType>0</ValueType><Value/><Registries/></Registry><Registry><Type>1</Type><Virtual>true</Virtual><Name>Config</Name><ValueType>0</ValueType><Value/><Registries/></Registry></Registries></Registries><Packaging><Enabled>false</Enabled></Packaging><Options><ShareVirtualSystem>false</ShareVirtualSystem><MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile><AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles></Options></>'
+
+          [System.IO.File]::WriteAllText($evbFile, $evbXml, [System.Text.Encoding]::Unicode)
+          & $evbConsole $evbFile
+          if (-not (Test-Path $packedExe)) {
+            Write-Error "Failed to create packed MasscanGUI.exe!"
+            exit 1
+          }
+
+          # 8. Copy data folder next to single-file MasscanGUI.exe
+          if (Test-Path "data") {
+            Copy-Item -Recurse -Force "data" $distDir.FullName
+          }
+
+          # 9. Verify final package contents
+          $finalFiles = Get-ChildItem -Path $distDir.FullName -Recurse -File
+          Write-Output "Total files in final package: $($finalFiles.Count)"
+          foreach ($f in $finalFiles) {
+            Write-Output "  $($f.FullName.Replace($distDir.FullName, '')) ($([math]::Round($f.Length / 1MB, 2)) MB)"
+          }
+
+          $dlls = Get-ChildItem -Path $distDir.FullName -Recurse -Filter "*.dll"
+          if ($dlls.Count -gt 0) {
+            Write-Error "Verification failed: External DLLs found in dist_package!"
+            exit 1
           }
 
       - name: Package Release Archive
         shell: pwsh
         run: |
-          $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
-          $outDir = Split-Path -Parent $exeItem.FullName
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v1.0.0" }
           $zipName = "MasscanGUI-$tag-windows-x64.zip"
-          Write-Output "Archiving from $outDir to $zipName"
-          Compress-Archive -Path "$outDir/*" -DestinationPath $zipName -Force
+          Write-Output "Archiving from dist_package to $zipName"
+          Compress-Archive -Path "dist_package/*" -DestinationPath $zipName -Force
           $size = (Get-Item $zipName).Length
-          Write-Output "Release archive created: $zipName ($size bytes)"
+          Write-Output "Release archive created: $zipName ($([math]::Round($size / 1MB, 2)) MB)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
