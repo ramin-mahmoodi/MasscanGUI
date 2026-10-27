@@ -30,15 +30,14 @@ jobs:
           modules: 'qtimageformats'
 
       - name: Configure CMake
-        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT }}"
+        run: cmake -B build -S .
 
       - name: Build MasscanGUI
         run: cmake --build build --config Release
 
-      - name: Deploy Qt dependencies
+      - name: Deploy Qt and MSVC Runtime Dependencies
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Continue'
           $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
           if (-not $exeItem) {
             Write-Error "MasscanGUI.exe was not found in build directory!"
@@ -46,14 +45,48 @@ jobs:
           }
           $exe = $exeItem.FullName
           $outDir = Split-Path -Parent $exe
-          Write-Output "Deploying Qt to: $outDir for binary: $exe"
+          Write-Output "Deploying dependencies to: $outDir for binary: $exe"
 
-          & "${env:QT_ROOT}/bin/windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw $exe
-
-          if (Test-Path "data") {
-            Copy-Item -Recurse "data" "$outDir/data" -Force
+          # 1. Locate windeployqt
+          $windeployCmd = Get-Command "windeployqt.exe" -ErrorAction SilentlyContinue
+          if (-not $windeployCmd) {
+            Write-Error "windeployqt.exe not found in PATH!"
+            exit 1
           }
-          exit 0
+          $windeploy = $windeployCmd.Source
+          Write-Output "Found windeployqt at: $windeploy"
+
+          # 2. Run windeployqt to bundle Qt libraries and plugins
+          & $windeploy --release --no-translations --no-compiler-runtime --dir "$outDir" "$exe"
+
+          # 3. Copy MSVC CRT redistributable libraries so app runs without VC++ runtime installation
+          $crt = Get-ChildItem -Path "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($crt) {
+            Write-Output "Bundling MSVC CRT from: $($crt.FullName)"
+            Copy-Item "$($crt.FullName)\*.dll" -Destination "$outDir" -Force
+          }
+
+          # 4. Copy data directory cleanly
+          if (Test-Path "data") {
+            Copy-Item -Recurse -Force "data" "$outDir"
+          }
+
+          # 5. Verify deployment completeness
+          $dlls = Get-ChildItem -Path "$outDir" -Filter "*.dll"
+          Write-Output "Deployed DLLs in root: $($dlls.Count)"
+          foreach ($d in $dlls) {
+            Write-Output "  $($d.Name) ($($d.Length) bytes)"
+          }
+
+          if ($dlls.Count -lt 5) {
+            Write-Error "Verification failed: not enough DLLs deployed!"
+            exit 1
+          }
+          if (-not (Test-Path "$outDir/platforms/qwindows.dll")) {
+            Write-Error "Verification failed: platforms/qwindows.dll is missing!"
+            exit 1
+          }
+          Write-Output "Deployment verification passed!"
 
       - name: Package Release Archive
         shell: pwsh
@@ -64,6 +97,8 @@ jobs:
           $zipName = "MasscanGUI-$tag-windows-x64.zip"
           Write-Output "Archiving from $outDir to $zipName"
           Compress-Archive -Path "$outDir/*" -DestinationPath $zipName -Force
+          $size = (Get-Item $zipName).Length
+          Write-Output "Release archive created: $zipName ($size bytes)"
           Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Create GitHub Release
