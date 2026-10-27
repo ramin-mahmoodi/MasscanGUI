@@ -38,17 +38,32 @@ jobs:
       - name: Deploy Qt dependencies
         shell: pwsh
         run: |
-          & "${env:QT_ROOT}/bin/windeployqt.exe" --release --no-translations --compiler-runtime build/Release/MasscanGUI.exe
-          if (Test-Path "data") {
-            Copy-Item -Recurse "data" "build/Release/data" -Force
+          $ErrorActionPreference = 'Continue'
+          $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
+          if (-not $exeItem) {
+            Write-Error "MasscanGUI.exe was not found in build directory!"
+            exit 1
           }
+          $exe = $exeItem.FullName
+          $outDir = Split-Path -Parent $exe
+          Write-Output "Deploying Qt to: $outDir for binary: $exe"
+
+          & "${env:QT_ROOT}/bin/windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw $exe
+
+          if (Test-Path "data") {
+            Copy-Item -Recurse "data" "$outDir/data" -Force
+          }
+          exit 0
 
       - name: Package Release Archive
         shell: pwsh
         run: |
+          $exeItem = Get-ChildItem -Path "build" -Recurse -Filter "MasscanGUI.exe" | Select-Object -First 1
+          $outDir = Split-Path -Parent $exeItem.FullName
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v1.0.0" }
           $zipName = "MasscanGUI-$tag-windows-x64.zip"
-          Compress-Archive -Path "build/Release/*" -DestinationPath $zipName
+          Write-Output "Archiving from $outDir to $zipName"
+          Compress-Archive -Path "$outDir/*" -DestinationPath $zipName -Force
           Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Create GitHub Release
