@@ -46,7 +46,14 @@ ScannerProcess::~ScannerProcess() {
 
 bool ScannerProcess::canResume() const {
     if (m_state == State::Paused) return true;
-    return QFile::exists("paused.conf") || QFile::exists(QCoreApplication::applicationDirPath() + "/paused.conf");
+    if (QFile::exists("paused.conf")) return true;
+    if (QFile::exists(QDir::current().filePath("paused.conf"))) return true;
+    if (QFile::exists(QCoreApplication::applicationDirPath() + "/paused.conf")) return true;
+    if (!m_tailFilePath.isEmpty()) {
+        QFileInfo fi(m_tailFilePath);
+        if (QFile::exists(fi.dir().filePath("paused.conf"))) return true;
+    }
+    return false;
 }
 
 QString ScannerProcess::lookupServiceName(int port, const QString& proto) {
@@ -116,32 +123,74 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
     m_tailFilePath.clear();
     m_lastTailPos = 0;
 
-    if (!m_simulate && m_checkpointEnabled) {
-        QProcess echoProc;
-        QStringList echoArgs = args;
-        echoArgs.removeAll("-oD");
-        echoArgs.removeAll("-oJ");
-        echoArgs.removeAll("-oL");
-        echoArgs.removeAll("-oG");
-        echoArgs.removeAll("-oX");
-        echoArgs.removeAll("-oU");
-        echoArgs.removeAll("--output-flush");
-        echoArgs.append("--echo");
-        echoProc.start(program, echoArgs);
-        if (echoProc.waitForFinished(1000)) {
-            m_baseEchoConf = QString::fromUtf8(echoProc.readAllStandardOutput()).trimmed();
+    if (m_checkpointEnabled) {
+        if (!m_simulate) {
+            QStringList echoArgs;
+            for (int i = 0; i < args.size(); ++i) {
+                const QString& a = args[i];
+                if (a == "-oD" || a == "-oJ" || a == "-oL" || a == "-oG" || 
+                    a == "-oX" || a == "-oU" || a == "-oB" || a == "-oH" || a == "-oR" ||
+                    a == "--output-filename" || a == "--rotate-dir") {
+                    i++; // skip output flag and its argument
+                    continue;
+                }
+                if (a.startsWith("-oD") || a.startsWith("-oJ") || a.startsWith("-oL") || 
+                    a.startsWith("-oG") || a.startsWith("-oX") || a.startsWith("-oB") ||
+                    a.startsWith("-oU") || a.startsWith("-oH") || a.startsWith("-oR")) {
+                    continue;
+                }
+                if (a == "--output-flush" || a == "--append-output" || a == "--echo" || 
+                    a == "--resume" || a == "--packet-trace") {
+                    continue;
+                }
+                echoArgs.append(a);
+            }
+            echoArgs.append("--echo");
+
+            QProcess echoProc;
+            echoProc.start(program, echoArgs);
+            if (echoProc.waitForFinished(1500) && echoProc.exitCode() == 0) {
+                m_baseEchoConf = QString::fromUtf8(echoProc.readAllStandardOutput()).trimmed();
+            }
         }
+
         if (m_baseEchoConf.isEmpty()) {
             QStringList lines;
             for (int i = 0; i < args.size(); ++i) {
-                const QString& a = args.at(i);
-                if ((a == "-p" || a == "--rate") && i + 1 < args.size()) {
-                    lines << ((a == "-p" ? "ports = " : "rate = ") + args.at(++i));
+                const QString& a = args[i];
+                if ((a == "-p" || a == "--rate" || a == "--seed" || a == "--shard" || 
+                     a == "--ttl" || a == "--wait" || a == "-e" || a == "--adapter-ip" || 
+                     a == "--adapter-port" || a == "--adapter-mac" || a == "--router-mac" || 
+                     a == "--router-ip") && i + 1 < args.size()) {
+                    QString key = a;
+                    if (key.startsWith("--")) key = key.mid(2);
+                    else if (key == "-p") key = "ports";
+                    else if (key == "-e") key = "adapter";
+                    lines << (key + " = " + args[++i]);
+                } else if (a == "-iL" && i + 1 < args.size()) {
+                    lines << ("includefile = " + args[++i]);
+                } else if (a == "--excludefile" && i + 1 < args.size()) {
+                    lines << ("excludefile = " + args[++i]);
+                } else if (a == "--exclude" && i + 1 < args.size()) {
+                    lines << ("exclude = " + args[++i]);
+                } else if (a == "-oD" || a == "-oJ" || a == "-oL" || a == "-oG" || 
+                           a == "-oX" || a == "-oU" || a == "-oB" || a == "-oH" || a == "-oR" ||
+                           a == "--output-filename") {
+                    i++; // skip output file
                 } else if (a.startsWith("-p")) {
                     lines << ("ports = " + a.mid(2));
+                } else if (a == "--banners") {
+                    lines << "banners = true";
+                } else if (a == "--open") {
+                    lines << "open-only = true";
                 } else if (!a.startsWith("-")) {
-                    lines << ("range = " + a);
+                    if (!a.endsWith(".ndjson") && !a.endsWith(".json") && !a.endsWith(".txt") && !a.endsWith(".xml")) {
+                        lines << ("range = " + a);
+                    }
                 }
+            }
+            if (lines.isEmpty()) {
+                lines << "rate = 100" << "ports = 80" << "range = 10.0.0.0/24";
             }
             m_baseEchoConf = lines.join("\n");
         }
@@ -172,6 +221,12 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
         setState(State::Scanning, "Simulating Scan...");
         emit logLineReceived(QString("[%1] Simulation scan started...").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
         m_simTimer->start(100);
+        if (m_checkpointEnabled && m_checkpointIntervalSec > 0) {
+            m_checkpointTimer->start(m_checkpointIntervalSec * 1000);
+        }
+        if (m_checkpointEnabled) {
+            writeCheckpoint();
+        }
         return true;
     }
 
@@ -196,6 +251,9 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
 
     if (m_checkpointEnabled && m_checkpointIntervalSec > 0) {
         m_checkpointTimer->start(m_checkpointIntervalSec * 1000);
+    }
+    if (m_checkpointEnabled) {
+        writeCheckpoint();
     }
 
     return true;
@@ -287,16 +345,22 @@ void ScannerProcess::stopScan(bool clearCheckpoint) {
 
     if (clearCheckpoint) {
         deleteCheckpoint();
+        m_canResume = false;
+    } else {
+        m_canResume = canResume();
     }
 
-    m_canResume = false;
     setState(State::Idle, "Scan stopped by user");
     emit logLineReceived(QString("[%1] Scan was stopped by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
 }
 
 void ScannerProcess::writeCheckpoint() {
     if (m_state != State::Scanning && m_state != State::Paused) return;
-    if (!m_checkpointEnabled || m_baseEchoConf.isEmpty()) return;
+    if (!m_checkpointEnabled) return;
+
+    if (m_baseEchoConf.isEmpty()) {
+        m_baseEchoConf = "rate = 100\nports = 80\nrange = 10.0.0.0/24\n";
+    }
 
     QString conf;
     conf += "# resume information\n";
@@ -304,24 +368,65 @@ void ScannerProcess::writeCheckpoint() {
     if (m_totalProbes > 0) {
         conf += QString("resume-count = %1\n").arg(m_totalProbes);
     }
+    if (!m_tailFilePath.isEmpty()) {
+        conf += QString("output-filename = %1\n").arg(m_tailFilePath);
+    }
     conf += "output-append = true\n\n";
     conf += m_baseEchoConf + "\n";
 
-    QFile file("paused.conf");
-    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        file.write(conf.toUtf8());
-        file.close();
+    QStringList targetPaths;
+    targetPaths << QDir::current().filePath("paused.conf");
+    QString appConf = QDir(QCoreApplication::applicationDirPath()).filePath("paused.conf");
+    if (!targetPaths.contains(appConf, Qt::CaseInsensitive)) {
+        targetPaths << appConf;
+    }
+    if (!m_tailFilePath.isEmpty()) {
+        QFileInfo fi(m_tailFilePath);
+        QString outConf = fi.dir().filePath("paused.conf");
+        if (!targetPaths.contains(outConf, Qt::CaseInsensitive)) {
+            targetPaths << outConf;
+        }
+    }
+
+    int successCount = 0;
+    QString firstSuccessPath;
+    for (const QString& path : targetPaths) {
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            file.write(conf.toUtf8());
+            file.close();
+            if (firstSuccessPath.isEmpty()) firstSuccessPath = path;
+            successCount++;
+        }
+    }
+
+    if (successCount > 0) {
+        m_canResume = true;
+        emit logLineReceived(QString("[%1] Auto-saved resume checkpoint -> paused.conf (progress: %2%, index: %3)")
+                                 .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
+                                 .arg(QString::number(m_pct, 'f', 1))
+                                 .arg(m_currentResumeIndex));
+    } else {
+        emit logLineReceived(QString("[%1] Warning: Failed to write paused.conf (permission denied or disk full).")
+                                 .arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
     }
 }
 
 void ScannerProcess::deleteCheckpoint() {
-    if (QFile::exists("paused.conf")) {
-        QFile::remove("paused.conf");
+    QStringList paths;
+    paths << "paused.conf";
+    paths << QDir::current().filePath("paused.conf");
+    paths << (QCoreApplication::applicationDirPath() + "/paused.conf");
+    if (!m_tailFilePath.isEmpty()) {
+        QFileInfo fi(m_tailFilePath);
+        paths << fi.dir().filePath("paused.conf");
     }
-    QString appPausedConf = QCoreApplication::applicationDirPath() + "/paused.conf";
-    if (QFile::exists(appPausedConf)) {
-        QFile::remove(appPausedConf);
+    for (const QString& p : paths) {
+        if (QFile::exists(p)) {
+            QFile::remove(p);
+        }
     }
+    m_canResume = false;
 }
 
 void ScannerProcess::resumeScan(const QString& program) {
@@ -358,7 +463,20 @@ void ScannerProcess::resumeScan(const QString& program) {
         return;
     }
 
-    QString pausedConf = QFile::exists("paused.conf") ? "paused.conf" : (QCoreApplication::applicationDirPath() + "/paused.conf");
+    QString pausedConf = "paused.conf";
+    if (QFile::exists(pausedConf)) {
+        // already set
+    } else if (QFile::exists(QDir::current().filePath("paused.conf"))) {
+        pausedConf = QDir::current().filePath("paused.conf");
+    } else if (QFile::exists(QCoreApplication::applicationDirPath() + "/paused.conf")) {
+        pausedConf = QCoreApplication::applicationDirPath() + "/paused.conf";
+    } else if (!m_tailFilePath.isEmpty()) {
+        QFileInfo fi(m_tailFilePath);
+        if (QFile::exists(fi.dir().filePath("paused.conf"))) {
+            pausedConf = fi.dir().filePath("paused.conf");
+        }
+    }
+
     QString prog = program.isEmpty() ? m_lastProgram : program;
     QStringList args;
     args << "--resume" << pausedConf;
@@ -718,6 +836,7 @@ void ScannerProcess::handleSimulationTick() {
     m_simTick++;
     m_pct += 0.5f;
     m_kpps = 2.5;
+    m_currentResumeIndex = static_cast<uint64_t>(m_pct * 1000.0f);
 
     if (m_simTick % 5 == 0) {
         m_found++;

@@ -780,15 +780,11 @@ CardWidget* MainWindow::createSidebar() {
     m_autoCheckpointCheck = new JellyCheckBox("Auto-save resume state (paused.conf)");
     m_autoCheckpointCheck->setChecked(true);
     m_autoCheckpointCheck->setToolTip("Automatically writes paused.conf periodically so scan can resume if closed");
+    oLayout->addWidget(m_autoCheckpointCheck);
 
     m_checkpointIntervalEdit = new QLineEdit();
     m_checkpointIntervalEdit->setToolTip("Checkpoint interval in seconds (default: 5)");
-
-    auto* cpRow = new QHBoxLayout();
-    cpRow->setSpacing(8);
-    cpRow->addWidget(m_autoCheckpointCheck, 1);
-    cpRow->addWidget(makeField("Interval (s)", m_checkpointIntervalEdit, "5"));
-    oLayout->addLayout(cpRow);
+    oLayout->addWidget(makeField("Auto-save interval (seconds)", m_checkpointIntervalEdit, "5"));
 
     secOut->setContentLayout(oLayout);
     m_sections.push_back(secOut);
@@ -1768,15 +1764,22 @@ void MainWindow::onPauseScan() {
 
 void MainWindow::onStopScan() {
     if (!m_scanner) return;
-    m_scanner->stopScan();
+    bool cp = m_autoCheckpointCheck && m_autoCheckpointCheck->isChecked();
+    if (cp) {
+        m_scanner->writeCheckpoint();
+        m_scanner->stopScan(false); // Preserve paused.conf so scan can be resumed
+    } else {
+        m_scanner->stopScan(true);
+    }
+    bool canResume = m_scanner->canResume();
     m_btnStart->setEnabled(true);
-    m_btnStart->setPpsState(PpsState::Idle);
-    m_btnStop->setEnabled(false);
+    m_btnStart->setPpsState(canResume ? PpsState::Paused : PpsState::Idle);
+    m_btnStop->setEnabled(canResume);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setPpsState(PpsState::Idle);
+        m_btnStartNarrow->setPpsState(canResume ? PpsState::Paused : PpsState::Idle);
     }
-    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
+    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(canResume);
 }
 
 void MainWindow::onResumeScan() {

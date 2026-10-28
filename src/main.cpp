@@ -184,6 +184,45 @@ int main(int argc, char* argv[]) {
             win.show();
             app.processEvents();
 
+            // Test ScannerProcess checkpoint verification
+            {
+                masscan::ScannerProcess scanner;
+                scanner.setCheckpointEnabled(true);
+                scanner.setCheckpointInterval(1);
+                scanner.startScan("masscan", {"10.0.0.0/24", "-p", "80", "-oD", "scan.ndjson"}, true);
+                if (!QFile::exists("paused.conf")) {
+                    std::cerr << "[TEST FAIL] paused.conf was not created at scan start!" << std::endl;
+                    return 3;
+                }
+                QFile f("paused.conf");
+                if (!f.open(QIODevice::ReadOnly)) {
+                    std::cerr << "[TEST FAIL] failed to open paused.conf!" << std::endl;
+                    return 4;
+                }
+                QString content = QString::fromUtf8(f.readAll());
+                f.close();
+                if (!content.contains("resume-index") || !content.contains("ports = 80") || !content.contains("10.0.0.0/24")) {
+                    std::cerr << "[TEST FAIL] paused.conf contents invalid:\n" << content.toStdString() << std::endl;
+                    return 5;
+                }
+                scanner.pauseScan();
+                if (!scanner.canResume()) {
+                    std::cerr << "[TEST FAIL] canResume() should be true when paused!" << std::endl;
+                    return 6;
+                }
+                scanner.stopScan(false);
+                if (!scanner.canResume()) {
+                    std::cerr << "[TEST FAIL] canResume() should be true when stopped with keep checkpoint!" << std::endl;
+                    return 7;
+                }
+                scanner.deleteCheckpoint();
+                if (QFile::exists("paused.conf")) {
+                    std::cerr << "[TEST FAIL] deleteCheckpoint() did not remove paused.conf!" << std::endl;
+                    return 8;
+                }
+                std::cout << "[TEST OK] ScannerProcess checkpoint verification passed!" << std::endl;
+            }
+
             win.onToggleTheme();
             win.onToggleTheme();
 
