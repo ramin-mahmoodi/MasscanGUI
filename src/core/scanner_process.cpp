@@ -41,7 +41,7 @@ ScannerProcess::ScannerProcess(QObject* parent)
 }
 
 ScannerProcess::~ScannerProcess() {
-    stopScan();
+    stopScan(false);
 }
 
 bool ScannerProcess::canResume() const {
@@ -148,8 +148,9 @@ bool ScannerProcess::startScan(const QString& program, const QStringList& args, 
             echoArgs.append("--echo");
 
             QProcess echoProc;
+            echoProc.setWorkingDirectory(QDir::currentPath());
             echoProc.start(program, echoArgs);
-            if (echoProc.waitForFinished(1500) && echoProc.exitCode() == 0) {
+            if (echoProc.waitForFinished(2000) && echoProc.exitCode() == 0) {
                 m_baseEchoConf = QString::fromUtf8(echoProc.readAllStandardOutput()).trimmed();
             }
         }
@@ -347,6 +348,9 @@ void ScannerProcess::stopScan(bool clearCheckpoint) {
         deleteCheckpoint();
         m_canResume = false;
     } else {
+        if (m_checkpointEnabled) {
+            writeCheckpoint();
+        }
         m_canResume = canResume();
     }
 
@@ -355,7 +359,6 @@ void ScannerProcess::stopScan(bool clearCheckpoint) {
 }
 
 void ScannerProcess::writeCheckpoint() {
-    if (m_state != State::Scanning && m_state != State::Paused) return;
     if (!m_checkpointEnabled) return;
 
     if (m_baseEchoConf.isEmpty()) {
@@ -387,6 +390,10 @@ void ScannerProcess::writeCheckpoint() {
             targetPaths << outConf;
         }
     }
+    QString massGuiConf = QDir("MassGUI").filePath("paused.conf");
+    if (!targetPaths.contains(massGuiConf, Qt::CaseInsensitive)) {
+        targetPaths << massGuiConf;
+    }
 
     int successCount = 0;
     QString firstSuccessPath;
@@ -394,6 +401,7 @@ void ScannerProcess::writeCheckpoint() {
         QFile file(path);
         if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
             file.write(conf.toUtf8());
+            file.flush();
             file.close();
             if (firstSuccessPath.isEmpty()) firstSuccessPath = path;
             successCount++;
@@ -402,8 +410,9 @@ void ScannerProcess::writeCheckpoint() {
 
     if (successCount > 0) {
         m_canResume = true;
-        emit logLineReceived(QString("[%1] Auto-saved resume checkpoint -> paused.conf (progress: %2%, index: %3)")
+        emit logLineReceived(QString("[%1] Checkpoint saved -> %2 (progress: %3%, index: %4)")
                                  .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
+                                 .arg(firstSuccessPath)
                                  .arg(QString::number(m_pct, 'f', 1))
                                  .arg(m_currentResumeIndex));
     } else {
@@ -796,13 +805,13 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
 
     m_isSuspended = false;
 
-    if (exitCode == 0) {
-        deleteCheckpoint();
+    if (m_checkpointEnabled) {
+        writeCheckpoint();
     }
 
     if (m_userStopped) {
         m_userStopped = false;
-        m_canResume = false;
+        m_canResume = canResume();
         setState(State::Idle, "Scan stopped by user");
         emit scanFinished(exitCode, true);
         return;
@@ -812,6 +821,9 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
         if (exitCode == 0) {
             m_pct = 100.0f;
             emit progressUpdated(100.0f, 0.0, "00:00:00", m_found);
+            if (m_checkpointEnabled) {
+                writeCheckpoint();
+            }
         }
         setState(State::Completed, exitCode == 0 ? "Scan complete" : "Scan finished with exit code " + QString::number(exitCode));
         emit logLineReceived(QString("[%1] Process finished with exit code %2")

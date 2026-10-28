@@ -26,7 +26,7 @@ public:
     bool startScan(const QString& program, const QStringList& args, bool simulate = false);
     void pauseScan();
     void resumeScan(const QString& program = QString());
-    void stopScan(bool clearCheckpoint = true);
+    void stopScan(bool clearCheckpoint = false);
     void writeCheckpoint();
     void deleteCheckpoint();
 
