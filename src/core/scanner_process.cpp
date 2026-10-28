@@ -347,15 +347,18 @@ void ScannerProcess::stopScan(bool clearCheckpoint) {
     if (clearCheckpoint) {
         deleteCheckpoint();
         m_canResume = false;
+        emit logLineReceived(QString("[%1] Scan stopped by user and paused.conf deleted.")
+                                 .arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
     } else {
         if (m_checkpointEnabled) {
             writeCheckpoint();
         }
         m_canResume = canResume();
+        emit logLineReceived(QString("[%1] Scan paused/stopped. Resume state preserved in paused.conf.")
+                                 .arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
     }
 
-    setState(State::Idle, "Scan stopped by user");
-    emit logLineReceived(QString("[%1] Scan was stopped by user.").arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+    setState(State::Idle, clearCheckpoint ? "Scan stopped (checkpoint deleted)" : "Scan stopped (checkpoint preserved)");
 }
 
 void ScannerProcess::writeCheckpoint() {
@@ -805,13 +808,8 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
 
     m_isSuspended = false;
 
-    if (m_checkpointEnabled) {
-        writeCheckpoint();
-    }
-
     if (m_userStopped) {
         m_userStopped = false;
-        m_canResume = canResume();
         setState(State::Idle, "Scan stopped by user");
         emit scanFinished(exitCode, true);
         return;
@@ -821,9 +819,9 @@ void ScannerProcess::handleProcessFinished(int exitCode, QProcess::ExitStatus ex
         if (exitCode == 0) {
             m_pct = 100.0f;
             emit progressUpdated(100.0f, 0.0, "00:00:00", m_found);
-            if (m_checkpointEnabled) {
-                writeCheckpoint();
-            }
+            deleteCheckpoint(); // Natural 100% completion clears checkpoint
+        } else if (m_checkpointEnabled) {
+            writeCheckpoint();
         }
         setState(State::Completed, exitCode == 0 ? "Scan complete" : "Scan finished with exit code " + QString::number(exitCode));
         emit logLineReceived(QString("[%1] Process finished with exit code %2")

@@ -1764,22 +1764,15 @@ void MainWindow::onPauseScan() {
 
 void MainWindow::onStopScan() {
     if (!m_scanner) return;
-    bool cp = m_autoCheckpointCheck && m_autoCheckpointCheck->isChecked();
-    if (cp) {
-        m_scanner->writeCheckpoint();
-        m_scanner->stopScan(false); // Preserve paused.conf so scan can be resumed
-    } else {
-        m_scanner->stopScan(true);
-    }
-    bool canResume = m_scanner->canResume();
+    m_scanner->stopScan(true); // User explicitly clicked Stop: stop scan and delete paused.conf
     m_btnStart->setEnabled(true);
-    m_btnStart->setPpsState(canResume ? PpsState::Paused : PpsState::Idle);
-    m_btnStop->setEnabled(canResume);
+    m_btnStart->setPpsState(PpsState::Idle);
+    m_btnStop->setEnabled(false);
     if (m_btnStartNarrow) {
         m_btnStartNarrow->setEnabled(true);
-        m_btnStartNarrow->setPpsState(canResume ? PpsState::Paused : PpsState::Idle);
+        m_btnStartNarrow->setPpsState(PpsState::Idle);
     }
-    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(canResume);
+    if (m_btnStopNarrow) m_btnStopNarrow->setEnabled(false);
 }
 
 void MainWindow::onResumeScan() {

@@ -211,9 +211,15 @@ int main(int argc, char* argv[]) {
                     return 6;
                 }
                 scanner.stopScan(false);
-                if (!scanner.canResume()) {
-                    std::cerr << "[TEST FAIL] canResume() should be true when stopped with keep checkpoint!" << std::endl;
+                if (!scanner.canResume() || !QFile::exists("paused.conf")) {
+                    std::cerr << "[TEST FAIL] canResume() and paused.conf must be true when stopped with keep checkpoint!" << std::endl;
                     return 7;
+                }
+                // Test Stop button: must delete paused.conf
+                scanner.stopScan(true);
+                if (scanner.canResume() || QFile::exists("paused.conf")) {
+                    std::cerr << "[TEST FAIL] stopScan(true) must delete paused.conf!" << std::endl;
+                    return 8;
                 }
                 std::cout << "[TEST OK] ScannerProcess checkpoint verification passed!" << std::endl;
             }
