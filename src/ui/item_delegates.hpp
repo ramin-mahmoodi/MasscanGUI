@@ -6,6 +6,8 @@
 #include <QPainterPath>
 #include <QFont>
 #include <QFontMetrics>
+#include <QMouseEvent>
+#include <QEvent>
 #include <set>
 #include <string>
 
@@ -22,11 +24,40 @@ class CountryItemDelegate : public QStyledItemDelegate {
     Q_OBJECT
 
 public:
-    explicit CountryItemDelegate(const std::set<std::string>* pickedCodes, QObject* parent = nullptr)
-        : QStyledItemDelegate(parent), m_pickedCodes(pickedCodes) {}
+    explicit CountryItemDelegate(const std::set<std::string>* pickedCodes, QAbstractItemView* view = nullptr)
+        : QStyledItemDelegate(view), m_pickedCodes(pickedCodes), m_view(view) {
+        if (m_view) {
+            m_view->setMouseTracking(true);
+            if (m_view->viewport()) {
+                m_view->viewport()->setMouseTracking(true);
+                m_view->viewport()->setAttribute(Qt::WA_Hover, true);
+                m_view->viewport()->installEventFilter(this);
+            }
+        }
+    }
 
     void setDark(bool isDark) {
         m_isDark = isDark;
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (m_view && watched == m_view->viewport()) {
+            if (event->type() == QEvent::MouseMove) {
+                auto* me = static_cast<QMouseEvent*>(event);
+                QModelIndex idx = m_view->indexAt(me->pos());
+                int newRow = idx.isValid() ? idx.row() : -1;
+                if (newRow != m_hoveredRow) {
+                    m_hoveredRow = newRow;
+                    m_view->viewport()->update();
+                }
+            } else if (event->type() == QEvent::Leave) {
+                if (m_hoveredRow != -1) {
+                    m_hoveredRow = -1;
+                    m_view->viewport()->update();
+                }
+            }
+        }
+        return QStyledItemDelegate::eventFilter(watched, event);
     }
 
     QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override {
@@ -39,27 +70,22 @@ public:
 
         std::string code = index.data(RoleCode).toString().toStdString();
         bool isPicked = m_pickedCodes && (m_pickedCodes->find(code) != m_pickedCodes->end());
-        bool isHovered = (option.state & QStyle::State_MouseOver);
+        bool isHovered = (index.row() == m_hoveredRow) || (option.state & QStyle::State_MouseOver);
 
         if (isPicked || isHovered) {
-            painter->save();
-            if (const auto* view = qobject_cast<const QAbstractItemView*>(option.widget)) {
-                if (const auto* vp = view->viewport()) {
-                    if (option.rect.top() < 6 || option.rect.bottom() > vp->height() - 6) {
-                        QPainterPath clipPath;
-                        clipPath.addRoundedRect(QRectF(vp->rect()), 5.0, 5.0);
-                        painter->setClipPath(clipPath);
-                    }
-                }
-            }
+            QRect itemRect = option.rect.adjusted(3, 1, -3, -1);
+            QPainterPath path;
+            path.addRoundedRect(QRectF(itemRect), 4.0, 4.0);
+
             if (isPicked) {
-                QColor selBg = m_isDark ? QColor("#3b9eff") : QColor("#1f73d6");
-                painter->fillRect(option.rect, selBg);
+                QColor selBg = isHovered 
+                    ? (m_isDark ? QColor("#4fa8ff") : QColor("#2b7de0"))
+                    : (m_isDark ? QColor("#3b9eff") : QColor("#1f73d6"));
+                painter->fillPath(path, selBg);
             } else {
                 QColor hovBg = m_isDark ? QColor("#2a3340") : QColor("#d3dae4");
-                painter->fillRect(option.rect, hovBg);
+                painter->fillPath(path, hovBg);
             }
-            painter->restore();
         }
 
         QString label = index.data(RoleLabel).toString();
@@ -118,6 +144,8 @@ public:
 
 private:
     const std::set<std::string>* m_pickedCodes{nullptr};
+    QAbstractItemView* m_view{nullptr};
+    int m_hoveredRow{-1};
     bool m_isDark{true};
 };
 
@@ -125,11 +153,40 @@ class TargetItemDelegate : public QStyledItemDelegate {
     Q_OBJECT
 
 public:
-    explicit TargetItemDelegate(QObject* parent = nullptr)
-        : QStyledItemDelegate(parent) {}
+    explicit TargetItemDelegate(QAbstractItemView* view = nullptr)
+        : QStyledItemDelegate(view), m_view(view) {
+        if (m_view) {
+            m_view->setMouseTracking(true);
+            if (m_view->viewport()) {
+                m_view->viewport()->setMouseTracking(true);
+                m_view->viewport()->setAttribute(Qt::WA_Hover, true);
+                m_view->viewport()->installEventFilter(this);
+            }
+        }
+    }
 
     void setDark(bool isDark) {
         m_isDark = isDark;
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (m_view && watched == m_view->viewport()) {
+            if (event->type() == QEvent::MouseMove) {
+                auto* me = static_cast<QMouseEvent*>(event);
+                QModelIndex idx = m_view->indexAt(me->pos());
+                int newRow = idx.isValid() ? idx.row() : -1;
+                if (newRow != m_hoveredRow) {
+                    m_hoveredRow = newRow;
+                    m_view->viewport()->update();
+                }
+            } else if (event->type() == QEvent::Leave) {
+                if (m_hoveredRow != -1) {
+                    m_hoveredRow = -1;
+                    m_view->viewport()->update();
+                }
+            }
+        }
+        return QStyledItemDelegate::eventFilter(watched, event);
     }
 
     QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override {
@@ -141,27 +198,22 @@ public:
         painter->setRenderHint(QPainter::Antialiasing, true);
 
         bool isSelected = (option.state & QStyle::State_Selected);
-        bool isHovered = (option.state & QStyle::State_MouseOver);
+        bool isHovered = (index.row() == m_hoveredRow) || (option.state & QStyle::State_MouseOver);
 
         if (isSelected || isHovered) {
-            painter->save();
-            if (const auto* view = qobject_cast<const QAbstractItemView*>(option.widget)) {
-                if (const auto* vp = view->viewport()) {
-                    if (option.rect.top() < 6 || option.rect.bottom() > vp->height() - 6) {
-                        QPainterPath clipPath;
-                        clipPath.addRoundedRect(QRectF(vp->rect()), 5.0, 5.0);
-                        painter->setClipPath(clipPath);
-                    }
-                }
-            }
+            QRect itemRect = option.rect.adjusted(3, 1, -3, -1);
+            QPainterPath path;
+            path.addRoundedRect(QRectF(itemRect), 4.0, 4.0);
+
             if (isSelected) {
-                QColor selBg = m_isDark ? QColor("#3b9eff") : QColor("#1f73d6");
-                painter->fillRect(option.rect, selBg);
+                QColor selBg = isHovered 
+                    ? (m_isDark ? QColor("#4fa8ff") : QColor("#2b7de0"))
+                    : (m_isDark ? QColor("#3b9eff") : QColor("#1f73d6"));
+                painter->fillPath(path, selBg);
             } else {
                 QColor hovBg = m_isDark ? QColor("#2a3340") : QColor("#d3dae4");
-                painter->fillRect(option.rect, hovBg);
+                painter->fillPath(path, hovBg);
             }
-            painter->restore();
         }
 
         QString label = index.data(RoleLabel).toString();
@@ -206,6 +258,8 @@ public:
     }
 
 private:
+    QAbstractItemView* m_view{nullptr};
+    int m_hoveredRow{-1};
     bool m_isDark{true};
 };
 

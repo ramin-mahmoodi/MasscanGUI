@@ -224,6 +224,22 @@ int main(int argc, char* argv[]) {
                 std::cout << "[TEST OK] ScannerProcess checkpoint verification passed!" << std::endl;
             }
 
+            // Test hover in countryList and targetsList
+            auto* cl = win.findChild<QListWidget*>("countryList");
+            if (cl && cl->count() > 0) {
+                QPoint pt(30, 20);
+                QMouseEvent me(QEvent::MouseMove, pt, cl->viewport()->mapToGlobal(pt), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(cl->viewport(), &me);
+                app.processEvents();
+            }
+            auto* tl = win.findChild<QListWidget*>("targetsList");
+            if (tl && tl->count() > 0) {
+                QPoint pt(30, 15);
+                QMouseEvent me(QEvent::MouseMove, pt, tl->viewport()->mapToGlobal(pt), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(tl->viewport(), &me);
+                app.processEvents();
+            }
+
             win.onToggleTheme();
             win.onToggleTheme();
 

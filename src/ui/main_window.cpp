@@ -371,6 +371,11 @@ CardWidget* MainWindow::createSidebar() {
     m_countryListWidget->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_countryListWidget->setSelectionMode(QAbstractItemView::NoSelection);
     m_countryListWidget->setFocusPolicy(Qt::NoFocus);
+    m_countryListWidget->setMouseTracking(true);
+    if (m_countryListWidget->viewport()) {
+        m_countryListWidget->viewport()->setMouseTracking(true);
+        m_countryListWidget->viewport()->setAttribute(Qt::WA_Hover, true);
+    }
     m_countryDelegate = new CountryItemDelegate(&m_pickedCountryCodes, m_countryListWidget);
     m_countryDelegate->setDark(m_isDarkTheme);
     m_countryListWidget->setItemDelegate(m_countryDelegate);
@@ -410,6 +415,11 @@ CardWidget* MainWindow::createSidebar() {
     m_targetsListWidget->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_targetsListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
     m_targetsListWidget->setFocusPolicy(Qt::NoFocus);
+    m_targetsListWidget->setMouseTracking(true);
+    if (m_targetsListWidget->viewport()) {
+        m_targetsListWidget->viewport()->setMouseTracking(true);
+        m_targetsListWidget->viewport()->setAttribute(Qt::WA_Hover, true);
+    }
     m_targetDelegate = new TargetItemDelegate(m_targetsListWidget);
     m_targetDelegate->setDark(m_isDarkTheme);
     m_targetsListWidget->setItemDelegate(m_targetDelegate);
