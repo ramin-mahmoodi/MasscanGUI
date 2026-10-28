@@ -73,19 +73,26 @@ public:
         bool isHovered = (index.row() == m_hoveredRow) || (option.state & QStyle::State_MouseOver);
 
         if (isPicked || isHovered) {
-            QRect itemRect = option.rect.adjusted(3, 1, -3, -1);
-            QPainterPath path;
-            path.addRoundedRect(QRectF(itemRect), 4.0, 4.0);
-
+            painter->save();
+            if (const auto* view = qobject_cast<const QAbstractItemView*>(option.widget)) {
+                if (const auto* vp = view->viewport()) {
+                    if (option.rect.top() < 6 || option.rect.bottom() > vp->height() - 6) {
+                        QPainterPath clipPath;
+                        clipPath.addRoundedRect(QRectF(vp->rect()), 5.0, 5.0);
+                        painter->setClipPath(clipPath);
+                    }
+                }
+            }
             if (isPicked) {
                 QColor selBg = isHovered 
                     ? (m_isDark ? QColor("#4fa8ff") : QColor("#2b7de0"))
                     : (m_isDark ? QColor("#3b9eff") : QColor("#1f73d6"));
-                painter->fillPath(path, selBg);
+                painter->fillRect(option.rect, selBg);
             } else {
                 QColor hovBg = m_isDark ? QColor("#2a3340") : QColor("#d3dae4");
-                painter->fillPath(path, hovBg);
+                painter->fillRect(option.rect, hovBg);
             }
+            painter->restore();
         }
 
         QString label = index.data(RoleLabel).toString();
@@ -201,19 +208,26 @@ public:
         bool isHovered = (index.row() == m_hoveredRow) || (option.state & QStyle::State_MouseOver);
 
         if (isSelected || isHovered) {
-            QRect itemRect = option.rect.adjusted(3, 1, -3, -1);
-            QPainterPath path;
-            path.addRoundedRect(QRectF(itemRect), 4.0, 4.0);
-
+            painter->save();
+            if (const auto* view = qobject_cast<const QAbstractItemView*>(option.widget)) {
+                if (const auto* vp = view->viewport()) {
+                    if (option.rect.top() < 6 || option.rect.bottom() > vp->height() - 6) {
+                        QPainterPath clipPath;
+                        clipPath.addRoundedRect(QRectF(vp->rect()), 5.0, 5.0);
+                        painter->setClipPath(clipPath);
+                    }
+                }
+            }
             if (isSelected) {
                 QColor selBg = isHovered 
                     ? (m_isDark ? QColor("#4fa8ff") : QColor("#2b7de0"))
                     : (m_isDark ? QColor("#3b9eff") : QColor("#1f73d6"));
-                painter->fillPath(path, selBg);
+                painter->fillRect(option.rect, selBg);
             } else {
                 QColor hovBg = m_isDark ? QColor("#2a3340") : QColor("#d3dae4");
-                painter->fillPath(path, hovBg);
+                painter->fillRect(option.rect, hovBg);
             }
+            painter->restore();
         }
 
         QString label = index.data(RoleLabel).toString();

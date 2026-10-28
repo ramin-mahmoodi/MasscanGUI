@@ -309,6 +309,8 @@ QString getDarkStyle() {
             outline: none;
             border: none;
             background: transparent;
+            padding: 0px;
+            margin: 0px;
         }
 
         QListWidget#countryList:focus, QListWidget#targetsList:focus {
@@ -809,6 +811,8 @@ QString getLightStyle() {
             outline: none;
             border: none;
             background: transparent;
+            padding: 0px;
+            margin: 0px;
         }
 
         QListWidget#countryList:focus, QListWidget#targetsList:focus {
